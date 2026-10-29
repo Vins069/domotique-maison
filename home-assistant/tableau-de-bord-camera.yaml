@@ -1,0 +1,128 @@
+# OpenQIARA Claude V15 : vue « Caméra Qiara » pour un tableau de bord Home Assistant.
+# A coller dans un tableau de bord : Modifier > (trois points) > Modifier en YAML brut, puis ajouter ce bloc dans la
+# liste « views: » (ou creer un tableau neuf et remplacer son contenu par « views: » suivi de ce bloc).
+# Identifiants par defaut de l'appareil « OpenQiara Caméra » : a adapter si l'appareil a ete renomme.
+# Image en direct : ajouter une carte de votre camera (Frigate, go2rtc ou l'integration « Camera generique ») qui lit
+#   rtsp://<adresse de la camera>:8554/openqiara
+# En H.265, la lecture dans le navigateur passe par WebRTC (Frigate 0.16.3 et plus, Home Assistant 2026.5.3 et plus,
+# Chrome 136 et plus, applications Home Assistant) ; prevoir une sortie transcodee en H.264 pour les autres clients.
+- title: Caméra Qiara
+  path: camera-qiara
+  icon: mdi:cctv
+  type: sections
+  max_columns: 3
+  sections:
+    - type: grid
+      cards:
+        - type: heading
+          heading: État
+          badges:
+            - type: entity
+              entity: binary_sensor.openqiara_camera_en_ligne
+            - type: entity
+              entity: sensor.openqiara_camera_codec_video
+            - type: entity
+              entity: sensor.openqiara_camera_debit_video
+        - type: tile
+          entity: switch.openqiara_camera_openqiara_shutter
+          name: Cache de l'objectif
+        - type: tile
+          entity: sensor.openqiara_camera_version_openqiara
+          name: Version
+        - type: tile
+          entity: binary_sensor.openqiara_camera_surveillant_actif
+          name: QIARA Plus
+        - type: tile
+          entity: sensor.openqiara_camera_version_en_service
+          name: Emplacement en service
+        - type: tile
+          entity: binary_sensor.openqiara_camera_box_joignable
+        - type: tile
+          entity: sensor.openqiara_camera_processeur_occupe
+        - type: tile
+          entity: sensor.openqiara_camera_memoire_disponible
+        - type: tile
+          entity: sensor.openqiara_camera_donnees_occupees
+        - type: tile
+          entity: sensor.openqiara_camera_carte_sd_occupee
+        - type: tile
+          entity: sensor.openqiara_camera_dernier_redemarrage_automatique
+    - type: grid
+      cards:
+        - type: heading
+          heading: Image
+          badges:
+            - type: entity
+              entity: binary_sensor.openqiara_camera_reglages_d_image_par_defaut
+        - type: markdown
+          content: >-
+            Ces réglages pilotent directement la caméra. **Rotation** : 0 pour une caméra posée sur son socle,
+            2 pour une caméra fixée à l'envers ; les boutons « Restaurer » ne la changent jamais.
+            Codec, débit et image clé se changent par SSH (`sh /media/oqc/reglage.sh`).
+        - type: tile
+          entity: number.openqiara_camera_luminosite_jour
+          name: Luminosité
+        - type: tile
+          entity: number.openqiara_camera_saturation_jour
+          name: Saturation
+        - type: tile
+          entity: number.openqiara_camera_contraste_jour
+          name: Contraste
+        - type: tile
+          entity: number.openqiara_camera_clarte_jour
+          name: Clarté
+        - type: tile
+          entity: select.openqiara_camera_vision_de_nuit
+          name: Vision de nuit
+        - type: tile
+          entity: select.openqiara_camera_rotation_de_l_image
+          name: Rotation
+        - type: tile
+          entity: select.openqiara_camera_adaptation_a_la_lumiere_ambiante_jour
+          name: Adaptation lumière
+        - type: tile
+          entity: select.openqiara_camera_piece_sombre_vision_de_nuit_plus_tot
+          name: Pièce sombre
+        - type: tile
+          entity: number.openqiara_camera_temps_de_pose_maximal_nuit
+          name: Pose max (nuit)
+        - type: tile
+          entity: number.openqiara_camera_gain_capteur_maximal_nuit
+          name: Gain capteur (nuit)
+        - type: tile
+          entity: number.openqiara_camera_gain_numerique_maximal_nuit
+          name: Gain numérique (nuit)
+        - type: tile
+          entity: number.openqiara_camera_seuil_de_passage_en_mode_nuit
+          name: Seuil jour/nuit
+        - type: tile
+          entity: button.openqiara_camera_restaurer_les_reglages_de_jour_par_defaut
+          name: Défauts jour
+        - type: tile
+          entity: button.openqiara_camera_restaurer_les_reglages_de_nuit_par_defaut
+          name: Défauts nuit
+        - type: tile
+          entity: button.openqiara_camera_restaurer_tous_les_reglages_d_image_par_defaut
+          name: Tous les défauts
+    - type: grid
+      cards:
+        - type: heading
+          heading: Maintenance
+        - type: tile
+          entity: button.openqiara_camera_relancer_openqiara
+        - type: tile
+          entity: button.openqiara_camera_reconnecter_le_wi_fi
+        - type: tile
+          entity: button.openqiara_camera_reinitialiser_la_puce_wi_fi
+        - type: tile
+          entity: button.openqiara_camera_relancer_ssh
+        - type: tile
+          entity: button.openqiara_camera_redemarrer_la_camera
+        - type: tile
+          entity: binary_sensor.openqiara_camera_mise_a_jour_en_essai
+        - type: tile
+          entity: sensor.openqiara_camera_derniere_mise_a_jour
+        - type: tile
+          entity: button.openqiara_camera_annuler_la_mise_a_jour_en_essai
+        - type: tile
+          entity: button.openqiara_camera_revenir_a_la_version_precedente

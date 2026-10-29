@@ -1,0 +1,1200 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenQiara</title>
+<style>
+:root {
+  --bg: #0f1117;
+  --surface: #1a1d27;
+  --border: #2a2d3a;
+  --text: #e0e0e6;
+  --text-muted: #8888a0;
+  --primary: #6c8cff;
+  --success: #4caf80;
+  --danger: #e05050;
+  --warning: #e0a030;
+  --radius: 8px;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+a { color: var(--primary); }
+
+/* Layout */
+.header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 12px 20px; display: flex; align-items: center; justify-content: space-between; }
+.header h1 { font-size: 18px; font-weight: 600; }
+.status-bar { display: flex; gap: 16px; font-size: 13px; color: var(--text-muted); }
+.status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+.status-dot.on { background: var(--success); }
+.status-dot.off { background: var(--danger); }
+
+.container { max-width: 800px; margin: 0 auto; padding: 20px; }
+
+/* Tabs */
+.tabs { display: flex; gap: 4px; margin-bottom: 20px; }
+.tab { background: transparent; border: 1px solid var(--border); color: var(--text-muted); padding: 8px 16px; border-radius: var(--radius); cursor: pointer; font-size: 14px; }
+.tab.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+
+/* Cards */
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin-bottom: 12px; }
+.card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.card-title { font-weight: 600; font-size: 15px; }
+.card-meta { display: flex; gap: 16px; font-size: 13px; color: var(--text-muted); }
+
+/* Sensor state */
+.sensor-state { font-size: 13px; font-weight: 600; padding: 2px 8px; border-radius: 4px; }
+.sensor-state.closed { background: rgba(76,175,128,0.15); color: var(--success); }
+.sensor-state.open { background: rgba(224,80,80,0.15); color: var(--danger); }
+
+.sensor-icon { font-size: 24px; margin-right: 12px; }
+.sensor-row { display: flex; align-items: center; }
+
+/* Form */
+.form-group { margin-bottom: 12px; }
+.form-group label { display: block; font-size: 13px; color: var(--text-muted); margin-bottom: 4px; }
+.form-group input, .form-group select { width: 100%; padding: 8px 12px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); font-size: 14px; }
+.form-group input:focus, .form-group select:focus { outline: none; border-color: var(--primary); }
+
+.btn { padding: 8px 20px; border: none; border-radius: var(--radius); font-size: 14px; cursor: pointer; font-weight: 500; }
+.btn-primary { background: var(--primary); color: #fff; }
+.btn-danger { background: var(--danger); color: #fff; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.msg { padding: 8px 12px; border-radius: var(--radius); font-size: 13px; margin-top: 8px; }
+.msg.info { background: rgba(108,140,255,0.15); color: var(--primary); }
+.msg.success { background: rgba(76,175,128,0.15); color: var(--success); }
+.msg.error { background: rgba(224,80,80,0.15); color: var(--danger); }
+
+.empty { text-align: center; color: var(--text-muted); padding: 40px 0; }
+
+.btn-icon { background: transparent; border: 1px solid var(--border); color: var(--text-muted); padding: 4px 8px; border-radius: var(--radius); cursor: pointer; font-size: 14px; line-height: 1; }
+.btn-icon:hover { border-color: var(--danger); color: var(--danger); }
+
+/* Responsive */
+@media (max-width: 600px) {
+  .card-meta { flex-wrap: wrap; gap: 8px; }
+  .header { flex-direction: column; gap: 8px; align-items: flex-start; }
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>OpenQiara</h1>
+  <div class="status-bar">
+    <span><span class="status-dot" id="mqtt-dot"></span>MQTT: <span id="mqtt-status">--</span></span>
+    <span>Uptime: <span id="uptime">--</span></span>
+    <span>Capteurs: <span id="sensor-count">--</span></span>
+    <span>Version: <span id="version">--</span></span>
+  </div>
+</div>
+
+<!-- Bannière update : affichée seulement si une nouvelle version est dispo -->
+<div id="update-banner" style="display:none;padding:10px 16px;background:#1f3a52;color:#cde;border-bottom:1px solid #2a4a66;font-size:13px">
+  <span>Nouvelle version <strong id="update-version">--</strong> disponible.</span>
+  <button onclick="installUpdate()" id="update-install-btn" style="margin-left:12px;padding:4px 10px;background:#2a6cb0;color:white;border:none;border-radius:4px;cursor:pointer;font-size:13px">Installer</button>
+  <span id="update-progress" style="margin-left:12px;color:#9ab"></span>
+  <a id="update-notes-link" href="#" target="_blank" style="margin-left:12px;color:#9cf;font-size:12px">notes →</a>
+</div>
+
+<div class="container">
+  <div class="tabs">
+    <button class="tab active" data-tab="sensors">Capteurs</button>
+    <button class="tab" data-tab="alarm">Alarme</button>
+    <button class="tab" data-tab="pairing">Appairage</button>
+    <button class="tab" data-tab="camera">Caméra</button>
+    <button class="tab" data-tab="config">Configuration</button>
+  </div>
+
+  <!-- Sensors tab -->
+  <div id="tab-sensors" class="tab-content">
+    <div id="sensors-list"></div>
+  </div>
+
+  <!-- Alarm tab -->
+  <div id="tab-alarm" class="tab-content" style="display:none">
+    <div class="card" id="alarm-status-card" style="text-align:center;padding:24px">
+      <div style="font-size:13px;color:var(--text-muted);margin-bottom:8px">État de l'alarme</div>
+      <div id="alarm-state-label" style="font-size:24px;font-weight:700;margin-bottom:4px">--</div>
+      <div id="alarm-state-detail" style="font-size:13px;color:var(--text-muted);min-height:18px;margin-bottom:16px"></div>
+      <div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap">
+        <button class="btn" style="background:var(--danger);color:#fff" onclick="setAlarm('arm_away')">Armer (Total)</button>
+        <button class="btn" style="background:var(--warning);color:#fff" onclick="setAlarm('arm_night')">Armer (Nuit)</button>
+        <button class="btn" style="background:var(--success);color:#fff" onclick="setAlarm('disarm')">Désarmer</button>
+      </div>
+      <div id="alarm-msg"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title" style="margin-bottom:12px">Code clavier (KPD)</div>
+      <div id="codes-list" style="margin-bottom:12px"></div>
+      <div style="border-top:1px solid var(--border);padding-top:12px;margin-top:12px">
+        <div style="font-size:14px;font-weight:500;margin-bottom:8px">Modifier le code</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+          <div class="form-group" style="margin-bottom:0;flex:1;min-width:100px">
+            <label>Code (4 chiffres)</label>
+            <input type="text" id="code-pwd" maxlength="4" pattern="[0-9]{4}" placeholder="1234">
+          </div>
+          <div class="form-group" style="margin-bottom:0;flex:1;min-width:100px">
+            <label>Libellé</label>
+            <input type="text" id="code-label" placeholder="admin">
+          </div>
+          <button class="btn btn-primary" onclick="addCode()">Enregistrer</button>
+        </div>
+        <p style="color:var(--text-muted);font-size:12px;margin-top:8px">Le code sera actif au prochain démarrage du clavier (cycle batterie)</p>
+      </div>
+      <div id="codes-msg"></div>
+    </div>
+  </div>
+
+  <!-- Pairing tab -->
+  <div id="tab-pairing" class="tab-content" style="display:none">
+    <div class="card">
+      <div class="card-title" style="margin-bottom:12px">Ajouter un capteur</div>
+      <div class="form-group">
+        <label>Type de capteur</label>
+        <select id="pair-type">
+          <option value="DWS">DWS - Ouverture porte/fenêtre</option>
+          <option value="PIR">PIR - Détecteur de mouvement</option>
+          <option value="SRN">SRN - Sirène</option>
+          <option value="KPD">KPD - Clavier</option>
+        </select>
+      </div>
+      <button class="btn btn-primary" id="pair-start">Démarrer l'appairage</button>
+      <button class="btn btn-danger" id="pair-cancel" style="display:none">Annuler</button>
+      <div id="pair-msg"></div>
+    </div>
+  </div>
+
+  <!-- Camera tab -->
+  <div id="tab-camera" class="tab-content" style="display:none">
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Cache objectif</span>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-primary" onclick="setShutter(true)" id="shutter-open-btn">Ouvrir</button>
+          <button class="btn" style="background:var(--border);color:var(--text)" onclick="setShutter(false)" id="shutter-close-btn">Fermer</button>
+        </div>
+      </div>
+      <div id="shutter-msg"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Flux vidéo</span>
+        <button class="btn btn-primary" id="stream-open">Démarrer</button>
+      </div>
+      <div id="stream-info" style="display:none;margin-top:12px">
+        <video id="stream-video" controls autoplay muted playsinline style="width:100%;border-radius:var(--radius);background:#000;max-height:400px"></video>
+        <div style="margin-top:8px">
+          <div class="form-group" style="margin-bottom:0">
+            <label>URL HLS (VLC ou autre lecteur)</label>
+            <input type="text" id="stream-url" readonly style="cursor:pointer;font-size:12px" onclick="this.select();document.execCommand('copy')">
+          </div>
+        </div>
+      </div>
+      <div id="stream-msg"></div>
+    </div>
+  </div>
+
+  <!-- Config tab -->
+  <div id="tab-config" class="tab-content" style="display:none">
+    <div class="card">
+      <!-- Alarme -->
+      <div class="card-title" style="margin-bottom:12px">Alarme</div>
+      <div class="form-group">
+        <label>Mode</label>
+        <select id="cfg-alarm-mode">
+          <option value="standalone">Autonome</option>
+          <option value="alarmo">Alarmo (via Home Assistant)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Sons sirène</label>
+        <select id="cfg-siren-sounds">
+          <option value="all">Tous (bips de la sirène pendant les délais + alarme)</option>
+          <option value="alarm_only">Délais silencieux + alarme</option>
+          <option value="none">Sirène jamais armée</option>
+        </select>
+      </div>
+      <!-- Délais comptés par la sirène, dans les deux modes : en alarmo,
+           ils ne servent que si la passerelle tombe, à régler comme ceux
+           d'Alarmo. -->
+      <div class="form-group">
+        <label>Délai de sortie (s) <span style="color:var(--text-muted);font-size:12px">après un armement au clavier, 255 s au plus</span></label>
+        <input type="number" id="cfg-arming-delay" min="0" max="255" step="1">
+      </div>
+      <div class="form-group">
+        <label>Délai d'entrée (s) <span style="color:var(--text-muted);font-size:12px">entre la détection et l'alarme, 255 s au plus</span></label>
+        <input type="number" id="cfg-pending-delay" min="0" max="255" step="1">
+      </div>
+      <div class="form-group">
+        <label>Durée de l'alarme (s) <span style="color:var(--text-muted);font-size:12px">510 s au plus</span></label>
+        <input type="number" id="cfg-wail-duration" min="1" max="510" step="1">
+      </div>
+      <p style="color:var(--text-muted);font-size:12px">En mode Alarmo, ces délais ne servent que si la caméra tombe en panne : la sirène armée prend alors le relais. Réglez-les comme ceux d'Alarmo.</p>
+      <hr style="border:none;border-top:1px solid var(--border);margin:20px 0">
+
+      <!-- Avancé (plié par défaut) -->
+      <div style="cursor:pointer;display:flex;align-items:center;gap:6px;margin-bottom:12px" id="cfg-advanced-toggle">
+        <span id="cfg-advanced-arrow" style="transition:transform 0.2s">▶</span>
+        <span class="card-title" style="margin:0">Avancé</span>
+      </div>
+      <div id="cfg-advanced" style="display:none">
+        <!-- MQTT -->
+        <div style="font-weight:600;font-size:14px;margin-bottom:8px">MQTT</div>
+        <div class="form-group">
+          <label>Broker</label>
+          <input type="text" id="cfg-broker" placeholder="tcp://192.168.1.100:1883">
+          <small style="display:block;margin-top:4px;font-size:12px;color:var(--text-muted)">tcp:// en clair, ou ssl:// pour TLS (port 8883). Le TLS/mTLS (certificats) se configure par fichier, pas ici — voir docs/mqtt.md.</small>
+        </div>
+        <div class="form-group">
+          <label>Utilisateur</label>
+          <input type="text" id="cfg-username" placeholder="(optionnel)">
+        </div>
+        <div class="form-group">
+          <label>Mot de passe MQTT</label>
+          <input type="password" id="cfg-password" placeholder="(optionnel)">
+        </div>
+        <div class="form-group">
+          <label>Préfixe topic</label>
+          <input type="text" id="cfg-prefix" placeholder="openqiara">
+        </div>
+        <div id="cfg-alarmo-topics" style="display:none">
+          <div class="form-group">
+            <label>Topic de commande Alarmo</label>
+            <input type="text" id="cfg-alarmo-cmd" placeholder="alarmo/command">
+          </div>
+          <div class="form-group">
+            <label>Topic d'état Alarmo</label>
+            <input type="text" id="cfg-alarmo-state" placeholder="alarmo/state">
+          </div>
+        </div>
+
+        <!-- HomeKit -->
+        <div style="font-weight:600;font-size:14px;margin:16px 0 8px">HomeKit</div>
+        <div class="form-group">
+          <label>Activer HomeKit</label>
+          <select id="cfg-hk-enabled">
+            <option value="false">Désactivé</option>
+            <option value="true">Activé</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Code d'appairage</label>
+          <input type="text" id="cfg-hk-pin" placeholder="00102003">
+        </div>
+        <div class="form-group">
+          <label>Nom du bridge</label>
+          <input type="text" id="cfg-hk-name" placeholder="OpenQiara">
+        </div>
+        <div class="form-group">
+          <label>Caméra HomeKit</label>
+          <select id="cfg-hk-camera-enabled">
+            <option value="false">Désactivée</option>
+            <option value="true">Activée (flux live iPhone)</option>
+          </select>
+        </div>
+        <div style="color:var(--text-muted);font-size:12px;margin-top:-4px;margin-bottom:12px">
+          ⚠️ Un redémarrage d'openqiarad est nécessaire pour appliquer les changements HomeKit (activation, PIN, nom, caméra).
+        </div>
+
+        <!-- Interface web -->
+        <div style="font-weight:600;font-size:14px;margin:16px 0 8px">Interface web</div>
+        <div class="form-group">
+          <label>État</label>
+          <select id="cfg-web-enabled">
+            <option value="true">Activée</option>
+            <option value="false">Désactivée (headless)</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Un seul bouton Enregistrer -->
+      <button class="btn btn-primary" id="cfg-save-all" style="margin-top:16px">Enregistrer</button>
+      <div id="cfg-msg"></div>
+
+      <!-- Sécurité : action à part, jamais envoyée par « Enregistrer » (#45) -->
+      <div style="font-weight:600;font-size:14px;margin:24px 0 8px;border-top:1px solid var(--border);padding-top:16px">Sécurité <span id="cfg-admin-status" style="color:var(--text-muted);font-size:12px;font-weight:normal"></span></div>
+      <div class="form-group">
+        <label>Nouveau mot de passe admin</label>
+        <input type="password" id="cfg-admin-password" placeholder="8 caractères minimum" autocomplete="new-password">
+      </div>
+      <div class="form-group">
+        <label>Confirmation</label>
+        <input type="password" id="cfg-admin-confirm" autocomplete="new-password">
+      </div>
+      <button class="btn btn-primary" onclick="changeAdminPassword()">Changer le mot de passe</button>
+      <button class="btn btn-danger" id="cfg-admin-disable" style="display:none" onclick="disableAdminAuth()">Désactiver l'authentification</button>
+      <div id="cfg-admin-msg"></div>
+
+      <!-- Système -->
+      <div style="font-weight:600;font-size:14px;margin:24px 0 8px;border-top:1px solid var(--border);padding-top:16px">Système</div>
+      <p style="color:var(--muted);font-size:13px;margin:0 0 8px">Redémarre la caméra. Le flux vidéo et l'appairage sont coupés ~1 à 2 min.</p>
+      <button class="btn" style="background:var(--danger);color:#fff" onclick="rebootCamera()" id="reboot-btn">Redémarrer la caméra</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = '';
+// Préfixe versionné de l'API. Les routes non versionnées ont été retirées
+// côté serveur (410 Gone) — tout passe par /api/v1.
+const V1 = API + '/api/v1';
+
+// Escape HTML special chars before injection in innerHTML. À utiliser pour
+// TOUT contenu venant du serveur (labels capteurs, codes, messages d'erreur)
+// avant de l'interpoler dans un template literal. Sans ça, un label sensor
+// type `<img src=x onerror=...>` exécute du JS dans la session admin.
+function escapeHTML(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// Variante pour insertion dans une string JS littérale (ex onclick=`fn('${...}')`).
+// Bloque les caractères qui sortent du quote ou injectent un script.
+function escapeJSString(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/"/g, '\\"')
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r');
+}
+
+// --- Tabs ---
+document.querySelectorAll('.tab').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.style.display = 'none');
+    btn.classList.add('active');
+    document.getElementById('tab-' + btn.dataset.tab).style.display = 'block';
+  });
+});
+
+// --- Status polling ---
+function formatUptime(seconds) {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  return h > 0 ? h + 'h ' + m + 'min' : m + 'min';
+}
+
+async function fetchStatus() {
+  try {
+    const r = await fetch(V1 + '/status');
+    const d = await r.json();
+    applyStatus(d);
+  } catch (e) {
+    const ms = document.getElementById('mqtt-status');
+    const md = document.getElementById('mqtt-dot');
+    if (ms) ms.textContent = 'erreur';
+    if (md) md.className = 'status-dot off';
+  }
+}
+
+// --- Sensors ---
+function sensorIcon(type) {
+  switch (type) {
+    case 'DWS': return '🚪';
+    case 'PIR': return '👁';
+    case 'SRN': return '🔔';
+    case 'KPD': return '⌨️';
+    default: return '📡';
+  }
+}
+
+function sensorStateLabel(sensor) {
+  if (sensor.type === 'DWS') return sensor.open ? 'Ouvert' : 'Fermé';
+  if (sensor.type === 'PIR') return sensor.motion ? 'Mouvement' : 'OK';
+  if (sensor.type === 'SRN') return sensor.reachable ? 'Prête' : 'Hors ligne';
+  return sensor.reachable ? 'En ligne' : 'Hors ligne';
+}
+
+function sensorStateClass(sensor) {
+  if (sensor.type === 'DWS') return sensor.open ? 'open' : 'closed';
+  if (sensor.type === 'PIR') return sensor.motion ? 'open' : 'closed';
+  return sensor.reachable ? 'closed' : 'open';
+}
+
+async function fetchSensors() {
+  try {
+    const r = await fetch(V1 + '/sensors');
+    const sensors = await r.json();
+    renderSensors(sensors);
+  } catch (e) {
+    const list = document.getElementById('sensors-list');
+    if (list) list.innerHTML = '<div class="msg error">Erreur chargement capteurs</div>';
+  }
+}
+
+async function renameSensor(id, current) {
+  const label = prompt('Nouveau nom du capteur :', current);
+  if (!label || label.trim() === '') return;
+  try {
+    const r = await fetch(V1 + '/sensors/' + id, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({label: label.trim()})
+    });
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    fetchSensors();
+  } catch (e) {
+    alert('Erreur renommage: ' + e.message);
+  }
+}
+
+async function deleteSensor(id) {
+  if (!confirm('Supprimer ce capteur ?')) return;
+  try {
+    const r = await fetch(V1 + '/sensors/' + id, {method: 'DELETE'});
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    fetchSensors();
+  } catch (e) {
+    alert('Erreur suppression: ' + e.message);
+  }
+}
+
+async function testSiren() {
+  if (!confirm('Tester la sirène ?')) return;
+  try {
+    const r = await fetch(V1 + '/commands/siren/test', {method: 'POST'});
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+  } catch (e) {
+    alert('Erreur: ' + e.message);
+  }
+}
+
+// --- Pairing ---
+let pairingSession = null;
+let pairingTimer = null;
+
+document.getElementById('pair-start').addEventListener('click', async () => {
+  const type = document.getElementById('pair-type').value;
+  const msg = document.getElementById('pair-msg');
+  msg.className = 'msg info';
+  msg.textContent = 'Démarrage...';
+  try {
+    const body = {type};
+    const r = await fetch(V1 + '/sensors/pair', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    pairingSession = d.session;
+    msg.textContent = 'Appairage en cours... Activez le capteur.';
+    document.getElementById('pair-start').style.display = 'none';
+    document.getElementById('pair-cancel').style.display = 'inline-block';
+    pairingTimer = setInterval(pollPairing, 2000);
+  } catch (e) {
+    msg.className = 'msg error';
+    msg.textContent = e.message;
+  }
+});
+
+async function pollPairing() {
+  const msg = document.getElementById('pair-msg');
+  try {
+    const r = await fetch(V1 + '/sensors/pair/' + pairingSession);
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    if (d.done) {
+      clearInterval(pairingTimer);
+      pairingTimer = null;
+      pairingSession = null;
+      msg.className = 'msg success';
+      msg.textContent = 'Capteur appairé avec succès !';
+      document.getElementById('pair-start').style.display = 'inline-block';
+      document.getElementById('pair-cancel').style.display = 'none';
+      fetchSensors();
+    }
+  } catch (e) {
+    clearInterval(pairingTimer);
+    pairingTimer = null;
+    msg.className = 'msg error';
+    msg.textContent = e.message;
+    document.getElementById('pair-start').style.display = 'inline-block';
+    document.getElementById('pair-cancel').style.display = 'none';
+  }
+}
+
+document.getElementById('pair-cancel').addEventListener('click', async () => {
+  if (pairingTimer) clearInterval(pairingTimer);
+  pairingTimer = null;
+  const msg = document.getElementById('pair-msg');
+  // pairingSession repasse à null dès qu'un appairage aboutit ou échoue.
+  // Sans cette garde on enverrait DELETE /sensors/pair/null, qui répond 400
+  // et afficherait « Erreur annulation » alors qu'il n'y a plus rien à
+  // annuler.
+  if (pairingSession !== null && pairingSession !== undefined) {
+    try {
+      await fetch(V1 + '/sensors/pair/' + pairingSession, {method: 'DELETE'});
+      msg.className = 'msg info';
+      msg.textContent = 'Appairage annulé.';
+    } catch (e) {
+      msg.className = 'msg error';
+      msg.textContent = 'Erreur annulation: ' + e.message;
+    }
+  }
+  pairingSession = null;
+  document.getElementById('pair-start').style.display = 'inline-block';
+  document.getElementById('pair-cancel').style.display = 'none';
+});
+
+async function setShutter(open) {
+  const msg = document.getElementById('shutter-msg');
+  msg.textContent = '';
+  try {
+    const r = await fetch(V1 + '/commands/shutter', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({open})
+    });
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    msg.className = 'msg success';
+    msg.textContent = open ? 'Cache ouvert' : 'Cache fermé';
+  } catch (e) {
+    msg.className = 'msg error';
+    msg.textContent = e.message;
+  }
+}
+
+// --- Video ---
+document.getElementById('stream-open').addEventListener('click', async () => {
+  const msg = document.getElementById('stream-msg');
+  const btn = document.getElementById('stream-open');
+  msg.className = 'msg info';
+  msg.textContent = 'Activation du flux...';
+  btn.disabled = true;
+  try {
+    const r = await fetch(V1 + '/commands/stream/start', {method: 'POST'});
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+
+    const hlsUrl = location.origin + d['720'];
+    document.getElementById('stream-url').value = hlsUrl;
+    document.getElementById('stream-info').style.display = 'block';
+    msg.textContent = '';
+
+    const video = document.getElementById('stream-video');
+    if (video.canPlayType('application/vnd.apple.mpegurl') && navigator.userAgent.includes('Safari') && !navigator.userAgent.includes('Chrome')) {
+      video.src = hlsUrl;
+    } else {
+      video.style.display = 'none';
+      msg.className = 'msg info';
+      msg.innerHTML = 'Le flux H.265 nécessite <b>Safari</b> ou <b>VLC</b>. Copiez le lien ci-dessous et ouvrez-le dans VLC (Fichier → Ouvrir un flux réseau).';
+    }
+    btn.textContent = 'Flux actif';
+  } catch (e) {
+    msg.className = 'msg error';
+    msg.textContent = e.message;
+    btn.disabled = false;
+  }
+});
+
+// --- Alarm ---
+const alarmLabels = {
+  disarmed: 'Désarmé',
+  arming: 'Armement en cours',
+  armed_away: 'Armé Total',
+  armed_night: 'Armé Nuit',
+  pending: 'Intrusion détectée',
+  triggered: 'Alarme déclenchée'
+};
+const alarmColors = {
+  disarmed: 'var(--success)',
+  arming: 'var(--warning)',
+  armed_away: 'var(--danger)',
+  armed_night: 'var(--warning)',
+  pending: 'var(--danger)',
+  triggered: 'var(--danger)'
+};
+
+async function fetchAlarm() {
+  try {
+    const r = await fetch(V1 + '/alarm');
+    const d = await r.json();
+    applyAlarmSnapshot(d);
+  } catch (e) {
+    const lbl = document.getElementById('alarm-state-label');
+    if (lbl) lbl.textContent = 'Erreur';
+  }
+}
+
+async function setNightAllowed(id, allowed) {
+  return setSensorFlag(id, {night_allowed: allowed});
+}
+
+async function setSensorFlag(id, flag) {
+  try {
+    const r = await fetch(V1 + '/sensors/' + id, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(flag)
+    });
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+  } catch (e) {
+    alert('Erreur : ' + e.message);
+    fetchSensors();
+  }
+}
+
+async function setAlarm(action) {
+  const msg = document.getElementById('alarm-msg');
+  msg.textContent = '';
+  try {
+    const r = await fetch(V1 + '/commands/alarm', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({action})
+    });
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    fetchAlarm();
+  } catch (e) {
+    msg.className = 'msg error';
+    msg.textContent = e.message;
+  }
+}
+
+// --- KPD Code ---
+async function fetchCodes() {
+  const list = document.getElementById('codes-list');
+  try {
+    const r = await fetch(V1 + '/kpd/code');
+    const d = await r.json();
+    if (d.error) {
+      // 404 = aucun clavier appairé (état normal, pas une panne).
+      // 409 = plusieurs claviers : le serveur refuse de choisir.
+      const cls = r.status === 409 ? 'error' : 'info';
+      list.innerHTML = '<div class="msg ' + cls + '">' + escapeHTML(d.error) + '</div>';
+      document.getElementById('code-pwd').value = '';
+      document.getElementById('code-label').value = '';
+      return;
+    }
+    if (!d.code) {
+      list.innerHTML = '<div style="color:var(--text-muted);font-size:13px">Aucun code configuré</div>';
+      document.getElementById('code-pwd').value = '';
+      document.getElementById('code-label').value = '';
+      return;
+    }
+    list.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:var(--surface);border-radius:6px;border:1px solid var(--border)">
+        <div>
+          <span style="font-weight:500">${escapeHTML(d.code.label || 'Code')}</span>
+          <span style="color:var(--text-muted);margin-left:8px;font-family:monospace">${escapeHTML(d.code.password)}</span>
+        </div>
+        <button class="btn-icon" onclick="deleteCode()" title="Supprimer">🗑️</button>
+      </div>`;
+    document.getElementById('code-pwd').value = d.code.password;
+    document.getElementById('code-label').value = d.code.label || '';
+  } catch (e) {
+    list.innerHTML = '<div class="msg error">Erreur chargement code</div>';
+  }
+}
+
+async function addCode() {
+  const pwd = document.getElementById('code-pwd').value.trim();
+  const label = document.getElementById('code-label').value.trim() || 'Code';
+  const msg = document.getElementById('codes-msg');
+  msg.textContent = '';
+
+  if (!/^\d{4}$/.test(pwd)) {
+    msg.className = 'msg error';
+    msg.textContent = 'Le code doit être composé de 4 chiffres';
+    return;
+  }
+
+  try {
+    const r = await fetch(V1 + '/kpd/code', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({password: pwd, label: label})
+    });
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    msg.className = 'msg success';
+    msg.textContent = 'Code enregistré. Actif au prochain cycle batterie du clavier.';
+    fetchCodes();
+  } catch (e) {
+    msg.className = 'msg error';
+    msg.textContent = e.message;
+  }
+}
+
+async function deleteCode() {
+  if (!confirm('Supprimer le code ?')) return;
+  const msg = document.getElementById('codes-msg');
+  msg.textContent = '';
+  try {
+    const r = await fetch(V1 + '/kpd/code', {method: 'DELETE'});
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    msg.className = 'msg success';
+    msg.textContent = 'Code supprimé.';
+    fetchCodes();
+  } catch (e) {
+    msg.className = 'msg error';
+    msg.textContent = e.message;
+  }
+}
+
+// --- Config ---
+async function loadConfig() {
+  try {
+    const r = await fetch(V1 + '/config');
+    const d = await r.json();
+    document.getElementById('cfg-broker').value = d.mqtt.broker || '';
+    document.getElementById('cfg-username').value = d.mqtt.username || '';
+    document.getElementById('cfg-password').value = '';
+    document.getElementById('cfg-password').placeholder = d.mqtt.password ? '(inchangé)' : '(optionnel)';
+    document.getElementById('cfg-prefix').value = d.mqtt.topic_prefix || '';
+    // HomeKit
+    if (d.homekit) {
+      document.getElementById('cfg-hk-enabled').value = d.homekit.enabled ? 'true' : 'false';
+      document.getElementById('cfg-hk-pin').value = d.homekit.pin || '';
+      document.getElementById('cfg-hk-name').value = d.homekit.name || '';
+      const camEnabled = d.homekit.camera && d.homekit.camera.enabled ? 'true' : 'false';
+      document.getElementById('cfg-hk-camera-enabled').value = camEnabled;
+    }
+    // Admin
+    const adminStatus = document.getElementById('cfg-admin-status');
+    if (adminStatus) {
+      adminStatus.textContent = d.admin && d.admin.password_set ? '— authentification activée' : '— authentification désactivée';
+      document.getElementById('cfg-admin-disable').style.display = d.admin && d.admin.password_set ? '' : 'none';
+    }
+    // Alarm
+    if (d.alarm) {
+      const mode = d.alarm.mode || 'standalone';
+      document.getElementById('cfg-alarm-mode').value = mode;
+      document.getElementById('cfg-alarmo-cmd').value = d.alarm.alarmo_command_topic || 'alarmo/command';
+      document.getElementById('cfg-alarmo-state').value = d.alarm.alarmo_state_topic || 'alarmo/state';
+      document.getElementById('cfg-alarmo-topics').style.display = mode === 'alarmo' ? '' : 'none';
+      document.getElementById('cfg-siren-sounds').value = d.alarm.siren_sounds || 'all';
+      document.getElementById('cfg-arming-delay').value = d.alarm.arming_delay_seconds ?? 60;
+      document.getElementById('cfg-pending-delay').value = d.alarm.pending_delay_seconds ?? 60;
+      document.getElementById('cfg-wail-duration').value = d.alarm.wail_duration_seconds ?? 300;
+      window.currentAlarmMode = mode;
+    }
+    const alarmMode = (d.alarm && d.alarm.mode) || 'standalone';
+    window.currentAlarmMode = alarmMode;
+    // Web
+    if (d.web) {
+      document.getElementById('cfg-web-enabled').value = d.web.enabled ? 'true' : 'false';
+    }
+  } catch (e) { /* ignore */ }
+}
+
+// Toggle Alarmo topics + timings blocs + sensor cards en fonction du
+// mode d'alarme choisi. En mode alarmo, HA Alarmo est la source de
+// vérité — les délais et flags par capteur n'ont aucun effet.
+document.addEventListener('DOMContentLoaded', () => {
+  const modeSel = document.getElementById('cfg-alarm-mode');
+  if (modeSel) {
+    modeSel.addEventListener('change', () => {
+      const m = modeSel.value;
+      document.getElementById('cfg-alarmo-topics').style.display = m === 'alarmo' ? '' : 'none';
+      window.currentAlarmMode = m;
+      const showLocal = m === 'standalone';
+      const cTim = document.getElementById('cfg-charmux-timings');
+      if (cTim) cTim.style.display = showLocal ? '' : 'none';
+      // Re-render la liste des capteurs si elle est déjà affichée
+      // (les flags par capteur dépendent du mode).
+      if (window.lastSensors) renderSensors(window.lastSensors);
+    });
+  }
+
+  // Check OTA update au chargement (lazy, cache 1h server-side).
+  checkForUpdate();
+});
+
+// Toggle avancé
+document.getElementById('cfg-advanced-toggle').addEventListener('click', () => {
+  const sec = document.getElementById('cfg-advanced');
+  const arrow = document.getElementById('cfg-advanced-arrow');
+  const open = sec.style.display === 'none';
+  sec.style.display = open ? '' : 'none';
+  arrow.style.transform = open ? 'rotate(90deg)' : '';
+});
+
+// Un seul bouton Enregistrer — sauvegarde toutes les sections en parallèle
+document.getElementById('cfg-save-all').addEventListener('click', async () => {
+  const msg = document.getElementById('cfg-msg');
+  msg.className = ''; msg.textContent = '';
+
+  const webEnabled = document.getElementById('cfg-web-enabled').value === 'true';
+  if (!webEnabled && !confirm('Désactiver l\'interface web ? Vous ne pourrez plus y accéder après redémarrage.')) {
+    return;
+  }
+
+  const calls = [];
+
+  // MQTT
+  const mqttBody = {
+    broker: document.getElementById('cfg-broker').value,
+    username: document.getElementById('cfg-username').value,
+    topic_prefix: document.getElementById('cfg-prefix').value,
+  };
+  const mqttPwd = document.getElementById('cfg-password').value;
+  if (mqttPwd) mqttBody.password = mqttPwd;
+  calls.push(fetch(V1 + '/config/mqtt', {
+    method: 'PUT', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(mqttBody)
+  }));
+
+  // HomeKit
+  calls.push(fetch(V1 + '/config/homekit', {
+    method: 'PUT', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      enabled: document.getElementById('cfg-hk-enabled').value === 'true',
+      pin: document.getElementById('cfg-hk-pin').value,
+      name: document.getElementById('cfg-hk-name').value,
+      camera: {
+        enabled: document.getElementById('cfg-hk-camera-enabled').value === 'true',
+      },
+    })
+  }));
+
+  // Alarme
+  calls.push(fetch(V1 + '/config/alarm', {
+    method: 'PUT', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      mode: document.getElementById('cfg-alarm-mode').value,
+      alarmo_command_topic: document.getElementById('cfg-alarmo-cmd').value,
+      alarmo_state_topic: document.getElementById('cfg-alarmo-state').value,
+      siren_sounds: document.getElementById('cfg-siren-sounds').value,
+      arming_delay_seconds: parseInt(document.getElementById('cfg-arming-delay').value, 10),
+      pending_delay_seconds: parseInt(document.getElementById('cfg-pending-delay').value, 10),
+      wail_duration_seconds: parseInt(document.getElementById('cfg-wail-duration').value, 10),
+    })
+  }));
+
+  // Web
+  calls.push(fetch(V1 + '/config/web', {
+    method: 'PUT', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({enabled: webEnabled})
+  }));
+
+  try {
+    const results = await Promise.all(calls);
+    let rebootRequired = false;
+    for (const r of results) {
+      const d = await r.json();
+      if (d.error) throw new Error(d.error);
+      if (d.reboot_required) rebootRequired = true;
+    }
+    msg.className = 'msg success';
+    msg.textContent = rebootRequired
+      ? 'Configuration sauvegardée. Redémarrez pour appliquer le broker MQTT.'
+      : 'Configuration sauvegardée.';
+    window.currentAlarmMode = document.getElementById('cfg-alarm-mode').value;
+    fetchSensors();
+  } catch (e) {
+    msg.className = 'msg error';
+    msg.textContent = e.message;
+  }
+});
+
+// --- Init ---
+// loadConfig() pose window.currentAlarmMode ; renderSensors() en dépend pour
+// masquer les flags par capteur en mode alarmo. On charge donc la
+// config AVANT le premier fetchSensors(), sinon la course fait apparaître les
+// flags à tort en mode alarmo (fallback 'standalone' quand le mode est encore
+// undefined).
+fetchStatus();
+fetchAlarm();
+fetchCodes();
+loadConfig().then(fetchSensors);
+
+// --- Server-Sent Events ---
+// Replaces polling with a single streaming connection. The server pushes:
+//   - alarm:   AlarmSnapshot   (on state change + every 1s during timer phases)
+//   - sensors: Sensor[]         (on each sensor state change)
+//   - status:  {mqtt_connected, sensor_count, uptime}  (every 5s)
+//
+// EventSource auto-reconnects on disconnect.
+function startEventStream() {
+  const es = new EventSource(V1 + '/events');
+
+  es.addEventListener('alarm', (e) => {
+    try {
+      const snap = JSON.parse(e.data);
+      applyAlarmSnapshot(snap);
+    } catch (_) {}
+  });
+
+  es.addEventListener('sensors', (e) => {
+    try {
+      const sensors = JSON.parse(e.data);
+      renderSensors(sensors);
+    } catch (_) {}
+  });
+
+  es.addEventListener('sensor', (e) => {
+    // Single sensor update — refetch the full list to pick up label/night_allowed from config.
+    fetchSensors();
+  });
+
+  es.addEventListener('status', (e) => {
+    try {
+      const d = JSON.parse(e.data);
+      applyStatus(d);
+    } catch (_) {}
+  });
+
+  es.onerror = () => {
+    // EventSource retries automatically. Nothing to do.
+  };
+}
+
+// applyAlarmSnapshot updates the UI from a snapshot (same shape as /api/alarm).
+function applyAlarmSnapshot(d) {
+  const label = document.getElementById('alarm-state-label');
+  const card = document.getElementById('alarm-status-card');
+  const detail = document.getElementById('alarm-state-detail');
+  if (!label) return;
+  label.textContent = alarmLabels[d.state] || d.state;
+  label.style.color = alarmColors[d.state] || 'var(--text)';
+  card.style.borderColor = alarmColors[d.state] || 'var(--border)';
+
+  let details = '';
+  if (d.timer_remaining > 0) {
+    if (d.state === 'arming') {
+      details = `Départ dans ${d.timer_remaining}s`;
+    } else if (d.state === 'pending') {
+      details = `Sirène dans ${d.timer_remaining}s — désarmez pour annuler`;
+    } else if (d.state === 'triggered') {
+      const mins = Math.ceil(d.timer_remaining / 60);
+      details = `Sirène active — arrêt automatique dans ${mins} min`;
+    }
+  }
+  if (d.triggered_by && (d.state === 'pending' || d.state === 'triggered')) {
+    details += (details ? ' · ' : '') + `Déclenché par capteur #${d.triggered_by}`;
+  }
+  if (detail) detail.textContent = details;
+}
+
+// applyStatus updates the status bar (uptime, mqtt, sensor count).
+function applyStatus(d) {
+  const dot = document.getElementById('mqtt-dot');
+  const status = document.getElementById('mqtt-status');
+  const uptime = document.getElementById('uptime');
+  const count = document.getElementById('sensor-count');
+  const ver = document.getElementById('version');
+  if (dot) dot.className = 'status-dot ' + (d.mqtt_connected ? 'on' : 'off');
+  if (status) status.textContent = d.mqtt_connected ? 'connecté' : 'déconnecté';
+  if (uptime) uptime.textContent = formatUptime(d.uptime);
+  if (count) count.textContent = d.sensor_count;
+  if (ver) ver.textContent = d.version || '--';
+}
+
+// --- OTA update banner ---
+//
+// On check au chargement de la page. Si une update est dispo, on affiche
+// le banner. Le bouton "Installer" déclenche /api/update/install puis
+// poll /api/update/status. Pendant le swap on désactive le bouton et on
+// affiche le progress ; au StepDone l'UI va perdre la connexion (le
+// daemon SIGTERM lui-même), on affiche un message d'attente.
+async function checkForUpdate() {
+  try {
+    const r = await fetch(V1 + '/update');
+    if (!r.ok) return; // 503 = pas configuré, silencieux
+    const d = await r.json();
+    if (!d.update_needed) return;
+    document.getElementById('update-version').textContent = d.latest.tag_name || '?';
+    const link = document.getElementById('update-notes-link');
+    if (d.latest.html_url) link.href = d.latest.html_url;
+    document.getElementById('update-banner').style.display = 'block';
+  } catch (e) {
+    // Silencieux : pas de réseau, pas grave.
+  }
+}
+
+async function changeAdminPassword() {
+  const msg = document.getElementById('cfg-admin-msg');
+  const pwd = document.getElementById('cfg-admin-password').value;
+  if (pwd !== document.getElementById('cfg-admin-confirm').value) {
+    msg.className = 'msg error'; msg.textContent = 'Les deux mots de passe diffèrent.';
+    return;
+  }
+  const r = await fetch(V1 + '/config/admin', {
+    method: 'PUT', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({password: pwd})
+  });
+  const d = await r.json();
+  if (d.error) { msg.className = 'msg error'; msg.textContent = d.error; return; }
+  // Le navigateur garde l'ancien mot de passe en cache : on recharge pour
+  // déclencher volontairement la demande d'identifiants.
+  alert('Mot de passe changé. Reconnectez-vous avec l\'utilisateur « admin » et le nouveau mot de passe.');
+  location.reload();
+}
+
+async function disableAdminAuth() {
+  if (!confirm('Désactiver l\'authentification ? L\'interface et l\'API (y compris le pilotage de l\'alarme) seront ouvertes à quiconque atteint la caméra.')) return;
+  const msg = document.getElementById('cfg-admin-msg');
+  const r = await fetch(V1 + '/config/admin', { method: 'DELETE' });
+  const d = await r.json();
+  if (d.error) { msg.className = 'msg error'; msg.textContent = d.error; return; }
+  msg.className = 'msg success'; msg.textContent = 'Authentification désactivée.';
+  loadConfig();
+}
+
+async function rebootCamera() {
+  if (!confirm('Redémarrer la caméra ? Le flux vidéo et l\'appairage seront coupés ~1 à 2 min.')) return;
+  const btn = document.getElementById('reboot-btn');
+  btn.disabled = true;
+  btn.textContent = 'Redémarrage...';
+  try {
+    const r = await fetch(V1 + '/commands/reboot', { method: 'POST' });
+    if (!r.ok) {
+      alert('Échec : ' + (await r.text()));
+      btn.disabled = false;
+      btn.textContent = 'Redémarrer la caméra';
+      return;
+    }
+    // La cam redémarre : on attend puis on recharge quand elle revient.
+    btn.textContent = 'Caméra en cours de redémarrage...';
+    setTimeout(() => location.reload(), 90000);
+  } catch (e) {
+    // La connexion peut tomber avant la réponse : c'est attendu.
+    btn.textContent = 'Caméra en cours de redémarrage...';
+    setTimeout(() => location.reload(), 90000);
+  }
+}
+
+async function installUpdate() {
+  const btn = document.getElementById('update-install-btn');
+  const progress = document.getElementById('update-progress');
+  if (!confirm('Installer la mise à jour ? L\'interface va se déconnecter pendant ~30 secondes.')) return;
+
+  btn.disabled = true;
+  btn.textContent = 'En cours...';
+  progress.textContent = 'démarrage...';
+
+  try {
+    const r = await fetch(V1 + '/commands/update/install', { method: 'POST' });
+    if (!r.ok) {
+      progress.textContent = 'échec : ' + (await r.text());
+      btn.disabled = false;
+      btn.textContent = 'Installer';
+      return;
+    }
+    // Poll le status toutes les 500ms jusqu'à StepDone ou StepFailed.
+    const poll = async () => {
+      try {
+        const sr = await fetch(V1 + '/update/status');
+        if (!sr.ok) {
+          // Le daemon a probablement redémarré : on attend qu'il revienne.
+          progress.textContent = 'redémarrage en cours...';
+          setTimeout(() => location.reload(), 8000);
+          return;
+        }
+        const s = await sr.json();
+        if (s.step === 'downloading' && s.total_bytes) {
+          progress.textContent = `download ${s.progress}% (${Math.round(s.bytes/1024)}KB / ${Math.round(s.total_bytes/1024)}KB)`;
+        } else {
+          progress.textContent = s.step;
+        }
+        if (s.step === 'failed') {
+          progress.textContent = 'échec : ' + (s.error || 'inconnu');
+          btn.disabled = false;
+          btn.textContent = 'Installer';
+          return;
+        }
+        if (s.step === 'done') {
+          progress.textContent = 'redémarrage en cours...';
+          setTimeout(() => location.reload(), 8000);
+          return;
+        }
+        setTimeout(poll, 500);
+      } catch (e) {
+        // Le daemon est probablement en train de redémarrer (SIGTERM).
+        progress.textContent = 'redémarrage en cours...';
+        setTimeout(() => location.reload(), 8000);
+      }
+    };
+    setTimeout(poll, 500);
+  } catch (e) {
+    progress.textContent = 'erreur réseau : ' + e.message;
+    btn.disabled = false;
+    btn.textContent = 'Installer';
+  }
+}
+
+// renderSensors rebuilds the sensors list from an array (extracted from fetchSensors).
+function renderSensors(sensors) {
+  const list = document.getElementById('sensors-list');
+  if (!list) return;
+  if (!sensors || sensors.length === 0) {
+    list.innerHTML = '<div class="empty">Aucun capteur appairé</div>';
+    return;
+  }
+  // Mémoriser la dernière liste pour permettre un re-render après
+  // changement de mode alarme (les flags par capteur disparaissent
+  // en mode alarmo).
+  window.lastSensors = sensors;
+  // night_allowed et instant disent à la sirène quels capteurs elle
+  // surveille, et avec quel délai : dans les deux modes, puisqu'en alarmo
+  // la sirène armée prend le relais si la caméra tombe.
+  list.innerHTML = sensors.map(s => {
+    const isSensor = s.type !== 'KPD' && s.type !== 'SRN';
+    const showNightAllowed = isSensor;
+    const nightChecked = s.night_allowed ? 'checked' : '';
+    const safeLabel = escapeHTML(s.label || (s.type + ' #' + s.id));
+    const safeLabelJS = escapeJSString(s.label || '');
+    return `
+      <div class="card">
+        <div class="sensor-row">
+          <span class="sensor-icon">${sensorIcon(s.type)}</span>
+          <div style="flex:1">
+            <div class="card-header">
+              <span class="card-title">${safeLabel}</span>
+              <div style="display:flex;align-items:center;gap:8px">
+                <span class="sensor-state ${sensorStateClass(s)}">${sensorStateLabel(s)}</span>
+                ${s.type === 'SRN' ? `<button class="btn-icon" onclick="testSiren()" title="Test sirène">🔔</button>` : ''}
+                <button class="btn-icon" onclick="renameSensor(${s.id}, '${safeLabelJS}')" title="Renommer">✏️</button>
+                <button class="btn-icon" onclick="deleteSensor(${s.id})" title="Supprimer">🗑️</button>
+              </div>
+            </div>
+            <div class="card-meta">
+              ${s.battery > 0 ? `<span>Batterie: ${s.battery}%</span>` : ''}
+              ${s.temperature != null ? `<span>Température: ${s.temperature}°C</span>` : ''}
+              <span>${s.reachable ? 'Joignable' : 'Injoignable'}</span>
+            </div>
+            ${showNightAllowed ? `
+            <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);display:flex;align-items:center;gap:8px;font-size:13px">
+              <label style="display:flex;align-items:center;gap:6px;cursor:pointer" title="Si coché, ce capteur ne déclenche pas l'alarme en mode Nuit">
+                <input type="checkbox" ${nightChecked} onchange="setNightAllowed(${s.id}, this.checked)">
+                <span>🌙 Autoriser en mode nuit</span>
+              </label>
+              <label style="display:flex;align-items:center;gap:6px;cursor:pointer" title="Si coché, ce capteur déclenche la sirène sans délai d'entrée (une fenêtre, par exemple)">
+                <input type="checkbox" ${s.instant ? 'checked' : ''} onchange="setSensorFlag(${s.id}, {instant: this.checked})">
+                <span>⚡ Instantané</span>
+              </label>
+            </div>` : ''}
+          </div>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+startEventStream();
+</script>
+</body>
+</html>

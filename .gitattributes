@@ -1,0 +1,13 @@
+# fins de ligne : les scripts du shell restent en LF (bash dans WSL et le shell de la camera refusent le CRLF),
+# les scripts PowerShell en CRLF ; les binaires ne sont jamais convertis.
+* text=auto
+*.sh text eol=lf
+boot.sh text eol=lf
+*.ps1 text eol=crlf
+*.txt text eol=lf
+*.yaml text eol=lf
+*.go text eol=lf
+openqiarad-claude-v15* binary
+qiara-plus/dist/qp-* text eol=lf
+# captures du simulateur Windows : octets exacts transmis par PowerShell (BOM, CRLF), jamais convertis
+essais/simulateur-windows/exemple-captures/** -text

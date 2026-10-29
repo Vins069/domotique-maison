@@ -1,0 +1,53 @@
+﻿# Configuration de l'installation d'OpenQIARA Claude V15 et de QIARA Plus v10
+# Une ligne par reglage, sous la forme NOM=valeur, sans guillemets. Les lignes qui commencent par # sont ignorees.
+# Ce fichier contient votre mot de passe Wi-Fi et celui de MQTT : ne le partagez pas, effacez-le apres l'installation.
+
+# ---------------------------------------------------------------- Wi-Fi (preparation de la carte SD seulement)
+# Reseau 2,4 GHz uniquement (la puce Wi-Fi de la camera ne connait pas le 5 GHz). Mot de passe WPA2 de 8 a 63 caracteres.
+WIFI_SSID=Mon Réseau 2,4 GHz
+WIFI_MOT_DE_PASSE=motdepasse$imulé
+
+# ---------------------------------------------------------------- Acces SSH a la camera
+# Chemin de votre cle publique SSH (fichier .pub). Obligatoire : sans elle, personne ne pourra se connecter a la camera.
+# Creer une cle : ssh-keygen -t ed25519   (sous Windows, dans PowerShell, la meme commande)
+CLE_SSH_PUBLIQUE=/mnt/c/Users/utilisateur/Documents/simulateur-windows/travail-20261029-133351/Utilisateurs/Hélène D'Arc/.ssh/id_ed25519.pub
+
+# ---------------------------------------------------------------- MQTT (Home Assistant)
+# Adresse du courtier MQTT (par exemple le module Mosquitto de Home Assistant) et compte dedie a la camera.
+# MQTT_SERVEUR : l'adresse seule, sans « tcp:// » ni port (exemple : 192.168.1.10 ou homeassistant.local).
+# Liaison chiffree (TLS) : a regler ensuite dans l'interface web de la camera (certificats), voir openqiara/docs/mqtt.md.
+MQTT_SERVEUR=192.168.1.10
+MQTT_PORT=1883
+MQTT_UTILISATEUR=camera
+MQTT_MOT_DE_PASSE=p"ass\word
+MQTT_PREFIXE=openqiara
+
+# ---------------------------------------------------------------- Video
+# CODEC : h265 (moitie du debit a qualite egale ; HomeKit impossible) ou h264 (HomeKit possible, tous les navigateurs).
+CODEC=h265
+# DEBIT : debit 1080p en bits par seconde (2500000 = 2,5 Mbit/s, eprouve sur une liaison Wi-Fi 2,4 GHz ; 500000 a 8000000).
+DEBIT=2500000
+# IMAGE_CLE : 1 = une image cle par seconde (plus de debit pour l'image elle-meme), 2 = toutes les 0,5 s (reglage d'origine,
+# reprise plus rapide apres une perte). Seules valeurs possibles : 1 ou 2.
+IMAGE_CLE=1
+# DETECTION_INTERNE : detection de personnes de la camera (oui), ou non si Frigate ou un autre enregistreur detecte.
+DETECTION_INTERNE=oui
+# REGLAGES_IMAGE : luminosite, saturation, vision de nuit, rotation... modifiables depuis Home Assistant (deverrouilles)
+# ou en lecture seule (verrouilles).
+REGLAGES_IMAGE=deverrouilles
+
+# ---------------------------------------------------------------- Camera
+# QIARA_PLUS : couche de fiabilite (lanceur a quatre emplacements, surveillant, mise a jour avec retour arriere). Recommande.
+QIARA_PLUS=oui
+# SERVICES_CLOUD : neutraliser (les services du cloud Qiara arrete ne demarrent plus, retour possible) ou laisser.
+SERVICES_CLOUD=neutraliser
+# SSH_SECOURS_PORT : second acces SSH de secours ouvert par QIARA Plus (port de 1024 a 65535, par exemple 2222) ; 0 = aucun.
+SSH_SECOURS_PORT=0
+# HOMEKIT : oui pour publier la camera et les capteurs dans Apple Maison (exige CODEC=h264), non sinon.
+# Preparation de la carte SD seulement : sur une camera deja sous OpenQiara, HomeKit se regle dans son interface web
+# (la mise a niveau refuse le H.265 si HomeKit y est actif).
+HOMEKIT=non
+
+# ---------------------------------------------------------------- Mise a niveau par SSH (camera deja sous OpenQiara)
+# Adresse IP (ou nom) de la camera sur votre reseau.
+CAMERA_ADRESSE=192.168.1.50

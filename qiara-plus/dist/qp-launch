@@ -1,0 +1,253 @@
+#!/bin/sh
+# Lanceur d'OpenQiara a trois emplacements (Claude, 26/10/2026, v2 ; v6 27/10 : numero de demarrage, app.env verifie,
+# factory relance sans app.env apres MAXFAIL arrets rapides, empreinte de l'essai notee dans le marqueur).
+# Installe sous /data/openqiarad : la boucle de boot.sh le relance comme elle relancait le binaire.
+# Il fait le bilan du lancement precedent, choisit le binaire (new, good ou factory), puis se REMPLACE par lui (exec) :
+# aucun processus supplementaire ne reste en memoire, les signaux vont directement a l'application.
+# Trois arrets rapides de suite (< QP_STABLE_SEC, meme demarrage) marquent l'emplacement BAD et font passer au suivant.
+# Un essai (new) est aussi ecarte s'il a ete lance plus de QP_MAXSTART fois sans etre valide (boucle de redemarrages).
+QP_WHO=qp-launch
+QP=${QP:-/data/qp}
+# common.sh - fonctions communes de « Qiara Plus » (Claude, 26/10/2026, v2 : econome en memoire et en processus ;
+# v6 27/10/2026 : ages mesures sur l'uptime et le numero de demarrage, jamais sur la seule horloge murale)
+# Shell : busybox ash de la camera. Rien ici ne doit supposer bash.
+# Les durees se mesurent sur /proc/uptime (monotone) : l'horloge murale demarre en 1970 et saute au reglage NTP.
+QP=${QP:-/data/qp}                 # petit : etat, binaire d'origine (carte /data, 20 Mio)
+BULK=${QP_BULK:-/media/qp}         # gros : emplacements good et new (carte /media, 2,8 Go)
+RUN=${QP_RUN:-/tmp/qp}             # memoire vive : sante, ordres, etat des essais
+ST=$QP/state
+LOG=${QP_LOG:-/data/openqiarad.log}
+OLD=${QP_OLD:-/media/openqiarad.old}   # repli ultime du lanceur (et de post_boot.sh si /data/openqiarad disparait) ; v6 : rafraichi par promote/seed-good, empreinte a cote
+[ -d "$ST" ] && [ -d "$RUN" ] || mkdir -p "$ST" "$RUN" 2>/dev/null
+
+ts() { date '+%Y-%m-%dT%H:%M:%S'; }
+now() { date +%s; }
+log() { echo "[${QP_WHO:-qp}] $(ts) $*" >> "$LOG" 2>/dev/null; }
+# lecture d'une ligne sans processus supplementaire : rd VAR fichier [defaut]
+rd() { eval "$1=" ; [ -s "$2" ] && { read -r "$1" < "$2" || :; }; eval "[ -n \"\$$1\" ] || $1=\${3-}"; }
+up_now() { _upt=0; read -r _upt _upr < "${QP_UPTIME:-/proc/uptime}" 2>/dev/null; UP=${_upt%%.*}; case "$UP" in ''|*[!0-9]*) UP=0;; esac; }   # met a jour $UP (secondes depuis le demarrage ; QP_UPTIME : banc d'essai)
+boot_id() { if [ -n "$QP_BOOT_ID" ]; then BOOT=$QP_BOOT_ID; else read -r BOOT < /proc/sys/kernel/random/boot_id; fi; }
+# v6 : numero de demarrage. $ST/boot_seq = "boot_id numero" ; le lanceur l'incremente a chaque nouveau demarrage (boot_seq_bump),
+# les autres le lisent (boot_seq_now pose SEQ, en comptant 1 de plus si le fichier vient d'un autre demarrage). Il permet de
+# faire expirer, apres un nombre de demarrages, ce qui a ete date a l'horloge de 1970 (sans reseau, l'heure n'est pas fiable).
+boot_seq_now() { boot_id; _sb=; _ss=0; [ -s "$ST/boot_seq" ] && read -r _sb _ss < "$ST/boot_seq" 2>/dev/null; toint _ss 0; SEQ=$_ss; [ "$_sb" = "$BOOT" ] || SEQ=$((_ss + 1)); }
+boot_seq_bump() { boot_seq_now; [ "$_sb" = "$BOOT" ] || put "$ST/boot_seq" "$BOOT $SEQ"; }
+# Entiers surs pour $(( )) : en mode POSIX, une erreur arithmetique ("12x", ou "08" lu en octal) ARRETE le shell.
+# Seuls les chiffres sont acceptes ; les zeros de tete sont retires.
+int() { case "$1" in ''|*[!0-9]*) echo "${2:-0}";; *) _i=${1#"${1%%[!0]*}"}; echo "${_i:-0}";; esac; }
+toint() { eval "case \"\$$1\" in ''|*[!0-9]*) $1=\${2:-0};; *) $1=\${$1#\"\${$1%%[!0]*}\"}; $1=\${$1:-0};; esac"; }    # toint VAR [defaut] : sans processus
+
+# Ecriture atomique : fichier temporaire du meme dossier, puis renommage.
+put() { echo "$2" > "$1.tmp.$$" 2>/dev/null && mv -f "$1.tmp.$$" "$1" 2>/dev/null; }
+get() { if [ -s "$1" ]; then head -n1 "$1"; else echo "$2"; fi; }
+# Resultat de la derniere mise a jour : en memoire vive (lu par les anciennes versions d'OpenQiara) ET sur la carte
+# (il survit a un redemarrage). Ecrit seulement lors d'une mise a jour ou d'un retour : usure negligeable.
+result() { put "$RUN/last_update_result" "$1"; put "$ST/last_update_result" "$1"; }
+last_result() { rd _lr "$RUN/last_update_result" ""; [ -n "$_lr" ] || rd _lr "$ST/last_update_result" aucun; }
+sha_of() { sha256sum "$1" 2>/dev/null | cut -d' ' -f1; }
+# v5 : l'application lancee par le lanceur. live_child pose CH a son numero de processus, seulement si ce numero vit ET porte le
+# nom de l'application (openqiarad, ou openqiarad.old en repli ultime) : $ST/child est sur la carte, il survit a un redemarrage,
+# et le numero peut avoir ete repris par un autre programme (dropbear, hlcamd...) qu'un arret ne doit jamais toucher.
+APP_COMM=${QP_APP_COMM:-openqiarad}
+live_child() {
+  rd CH "$ST/child" 0; toint CH 0
+  [ "$CH" != 0 ] && kill -0 "$CH" 2>/dev/null || { CH=0; return 1; }
+  _c=; read -r _c < /proc/$CH/comm 2>/dev/null
+  case "$_c" in "$APP_COMM"|"$APP_COMM".*) return 0;; esac
+  CH=0; return 1
+}
+
+# Dossier d'un emplacement : factory sur /data (toujours present), good et new sur /media.
+sd() { case "$1" in factory) echo "$QP/slots/factory";; *) echo "$BULK/slots/$1";; esac; }
+# Ordre de repli : new -> good -> prev (la version validee avant good) -> factory (origine, sur /data)
+order() { case "$1" in new) echo "new good prev factory";; good) echo "good prev factory";; prev) echo "prev factory";; *) echo "factory";; esac; }
+
+# Age d'un evenement date "boot_id uptime horloge" : age_of B U W pose AGE (secondes), mesure sur l'uptime si meme demarrage,
+# sur l'horloge murale sinon et seulement si elle est plausible des deux cotes (apres 2023-11, croissante) ; AGE=-1 si inconnu
+# (autre demarrage, horloge de 1970 d'un cote). Un W seul (ancien format, numerique) vaut "autre demarrage".
+age_of() {
+  _ab=$1; _au=$2; _aw=$3; AGE=-1
+  boot_id; up_now
+  if [ -n "$_ab" ] && [ "$_ab" = "$BOOT" ]; then AGE=$(( UP - $(int "$_au" 0) )); [ "$AGE" -lt 0 ] && AGE=0; return 0; fi
+  _an=$(now); _aw=$(int "$_aw" 0)
+  if [ "$_an" -gt 1700000000 ] && [ "$_aw" -gt 1700000000 ] && [ "$_an" -ge "$_aw" ]; then AGE=$((_an - _aw)); fi
+}
+# Marquage BAD : "boot_id uptime horloge numero_de_demarrage". Il expire apres QP_BAD_TTL s (mesure sur uptime si meme
+# demarrage, sur l'horloge sinon et seulement si elle est plausible) ou, quand l'age est inconnu (pose a l'horloge de 1970,
+# puis redemarrage), apres QP_BAD_BOOTS demarrages (v6 : sans cela un emplacement ecarte avant le reglage de l'heure l'etait
+# pour toujours). En cas de doute, l'emplacement reste ecarte.
+BAD_TTL=${QP_BAD_TTL:-1800}
+BAD_BOOTS=${QP_BAD_BOOTS:-2}
+slot_bad() {
+  _f=$(sd "$1")/BAD
+  [ -e "$_f" ] || return 1
+  [ "$1" = factory ] && return 1       # le binaire d'origine n'est jamais ecarte
+  _b=; _u=; _w=; _q=; read -r _b _u _w _q < "$_f" 2>/dev/null
+  [ -z "$_u" ] && [ -z "$_w" ] && { _w=$_b; _b=; }        # ancien format : une seule date
+  # v6 : un marquage vide ou illisible (fichier tronque) ne vaut rien : il est retire. Une boucle d'arrets le reposerait
+  # correctement en quelques secondes ; le garder aurait ecarte l'emplacement pour toujours.
+  case "${_u:-0}${_w:-0}" in *[!0-9]*) rm -f "$_f"; log "marquage BAD de $1 illisible : retire"; return 1;; esac
+  [ -n "$_u$_w" ] || { rm -f "$_f"; log "marquage BAD de $1 vide : retire"; return 1; }
+  age_of "$_b" "$_u" "$_w"
+  if [ "$AGE" -lt 0 ]; then
+    _age=0
+    case "$_q" in ''|*[!0-9]*) ;; *) boot_seq_now; [ $((SEQ - $(int "$_q" 0))) -ge "$BAD_BOOTS" ] && _age=$BAD_TTL;; esac
+  else _age=$AGE; fi
+  [ "$_age" -lt "$BAD_TTL" ] && return 0
+  rm -f "$_f"; return 1
+}
+# Emplacement utilisable : binaire non vide, non BAD, empreinte conforme (exigee pour good et new). Pose $VSHA.
+slot_valid() {
+  _d=$(sd "$1"); VSHA=
+  [ -s "$_d/openqiarad" ] || return 1
+  slot_bad "$1" && return 1
+  if [ -s "$_d/openqiarad.sha256" ]; then
+    _want=; read -r _want _x < "$_d/openqiarad.sha256"
+    VSHA=$(sha_of "$_d/openqiarad")
+    [ "$_want" = "$VSHA" ] || return 1
+  else
+    [ "$1" = factory ] || return 1
+  fi
+  return 0
+}
+mark_bad() { [ "$1" = factory ] && return 0; boot_seq_now; up_now; put "$(sd "$1")/BAD" "$BOOT $UP $(now) $SEQ"; log "emplacement $1 marque BAD"; }
+STABLE=$(int "${QP_STABLE_SEC:-120}" 120)
+GAP=$(int "${QP_GAP_SEC:-15}" 15)            # pause de la boucle de boot.sh entre deux lancements (10 s) + marge
+MAXFAIL=$(int "${QP_MAXFAIL:-3}" 3)
+MAXSTART=$(int "${QP_MAXSTART:-6}" 6)
+boot_id; up_now
+boot_seq_bump          # v6 : numero de demarrage (une ecriture par demarrage, seulement si le demarrage a change)
+
+# Verrou : un seul lanceur (puis une seule application, qui herite du pid) a la fois.
+LOCK=$RUN/launch.lock
+if ! mkdir "$LOCK" 2>/dev/null; then
+  rd op "$LOCK/pid" 0
+  [ "$op" = 0 ] && { sleep 1; rd op "$LOCK/pid" 0; }      # v5 : verrou en cours de creation (pid pas encore ecrit) : ne pas le voler
+  if [ "$op" != 0 ] && kill -0 "$op" 2>/dev/null; then sleep 5; exit 0; fi
+  rm -rf "$LOCK"; mkdir "$LOCK" 2>/dev/null || exit 1
+fi
+echo $$ > "$LOCK/pid"
+
+# 1. Bilan du lancement precedent (seulement s'il a eu lieu pendant ce demarrage)
+rd pslot "$ST/running_slot" ""
+rd pboot "$ST/run_boot" ""
+rd pup "$ST/run_up" 0
+fslot=; fails=0; [ -s "$ST/fails" ] && read -r fslot fails < "$ST/fails"
+fails=$(int "$fails" 0); [ "$fslot" = "$pslot" ] || fails=0      # le compteur appartient a un emplacement
+if [ -n "$pslot" ] && [ "$pboot" = "$BOOT" ]; then
+  dur=$(( UP - $(int "$pup" 0) ))
+  if [ -e "$ST/expected_stop" ]; then
+    log "$pslot arrete volontairement apres ~${dur} s"; fails=0
+  elif [ "$dur" -lt $((STABLE + GAP)) ]; then
+    fails=$((fails + 1))
+    log "$pslot s'est arrete apres ~${dur} s : arret rapide $fails/$MAXFAIL"
+    if [ "$fails" -ge "$MAXFAIL" ]; then
+      if [ "$pslot" = factory ]; then
+        # v6 : factory n'est jamais ecarte ; le compteur continue et, tant qu'il reste au plafond, l'application est lancee
+        # SANS app.env (un reglage Go invalide, GOMEMLIMIT par exemple, arrete l'execution Go au demarrage, pour toutes les versions)
+        log "factory : $fails arrets rapides, prochain lancement sans app.env"
+      else
+        [ "$pslot" != media-old ] && mark_bad "$pslot"
+        if [ "$pslot" = new ]; then rm -f "$ST/trial"; put "$ST/new_starts" 0; result "echec: new plante au demarrage, retour a good"; fi
+        fails=0
+      fi
+    fi
+  else
+    log "$pslot s'est arrete apres ~${dur} s"; fails=0
+  fi
+fi
+put "$ST/fails" "$pslot $fails"
+rm -f "$ST/expected_stop"
+
+# 2. Choix de l'emplacement
+rd active "$ST/active" good
+chosen=; BIN=
+for s in $(order "$active"); do
+  if slot_valid "$s"; then
+    if [ "$s" = new ]; then
+      rd ns "$ST/new_starts" 0; ns=$(( $(int "$ns" 0) + 1 ))
+      if [ "$ns" -gt "$MAXSTART" ]; then
+        log "new lance $((ns-1)) fois sans validation : ecarte (boucle de redemarrages ?)"
+        mark_bad new; put "$ST/new_starts" 0; rm -f "$ST/trial"
+        result "echec: new ecarte apres $((ns-1)) lancements sans validation"
+        continue
+      fi
+      put "$ST/new_starts" "$ns"
+    fi
+    chosen=$s; break
+  fi
+  log "emplacement $s inutilisable, essai du suivant"
+done
+if [ -z "$chosen" ]; then
+  # v6 : si une empreinte accompagne la copie de secours (ecrite par qp-update), elle doit correspondre ; sans empreinte, la copie
+  # d'origine (24/10, anterieure a Qiara Plus) est acceptee telle quelle, comme avant.
+  oldok=0
+  if [ -s "$OLD" ]; then
+    oldok=1; VSHA=$(sha_of "$OLD")
+    if [ -s "$OLD.sha256" ]; then _ow=; read -r _ow _ox < "$OLD.sha256"; [ "$_ow" = "$VSHA" ] || { oldok=0; log "copie de secours $OLD : empreinte differente de $OLD.sha256, ignoree"; }; fi
+  fi
+  if [ "$oldok" = 1 ]; then
+    log "aucun emplacement valide, repli sur $OLD"
+    BIN=$OLD; chosen=media-old
+  else
+    log "AUCUN binaire utilisable, nouvel essai dans 30 s"
+    rm -rf "$LOCK"; sleep "${QP_NOBIN_SLEEP:-30}"; exit 1
+  fi
+else
+  BIN=$(sd "$chosen")/openqiarad
+fi
+# Un essai (new) inutilisable met fin a l'essai : retour durable a good. Un repli depuis good ou prev reste
+# temporaire : l'emplacement actif ne change pas, il sera retente au prochain lancement (marquage BAD expire).
+if [ "$active" = new ] && [ "$chosen" != new ]; then
+  put "$ST/active" good; put "$ST/new_starts" 0
+  if [ -e "$ST/trial" ]; then rm -f "$ST/trial"; result "echec: new inutilisable, retour a good"; fi
+  log "essai abandonne (new inutilisable) : emplacement actif good, lance : $chosen"
+elif [ "$chosen" != "$active" ]; then
+  log "repli temporaire sur $chosen ($active inutilisable)"
+fi
+# v4.1 : un essai dont le marqueur a disparu (ecriture perdue par la carte SD lors de la panne du 26/10 a 20 h 28 :
+# active=new est reste, trial non) ne serait jamais valide ni annule par le surveillant. Le marqueur est recree :
+# l'essai reprend ses regles (validation apres 3 min de bonne sante, retour arriere sur blocages, 6 lancements au plus).
+if [ "$chosen" = new ] && [ ! -e "$ST/trial" ]; then
+  put "$ST/trial" "$(now) $VSHA"; sync
+  log "marqueur d'essai absent pour new (ecriture perdue ?) : recree, l'essai continue"
+  result "essai en cours : $(echo "$VSHA" | cut -c1-12) (marqueur recree)"
+fi
+[ -x "$BIN" ] || chmod 755 "$BIN" 2>/dev/null
+
+# 3. Reglages de l'execution Go (memoire) : seules quelques variables connues sont acceptees, avec une valeur de forme connue
+# (v6 : un GOMEMLIMIT mal forme fait sortir l'execution Go des le demarrage ; un fichier abime ne doit pas rendre toutes les
+# versions inlancables). Apres MAXFAIL arrets rapides de factory, le fichier est ignore en entier.
+noenv=0; [ "$chosen" = factory ] && [ "$pslot" = factory ] && [ "$fails" -ge "$MAXFAIL" ] && noenv=1
+if [ -s "$QP/app.env" ] && [ "$noenv" = 0 ]; then
+  while IFS='=' read -r k v; do
+    [ -n "$v" ] || continue
+    ok=0
+    case "$k" in
+      GOGC)        case "$v" in off|[0-9]|[0-9][0-9]|[0-9][0-9][0-9]|[0-9][0-9][0-9][0-9]) ok=1;; esac ;;
+      GOMEMLIMIT)  case "$v" in off) ok=1;; *[!0-9A-Za-z]*) ;; [0-9]*) case "${v#"${v%%[!0-9]*}"}" in ''|B|KiB|MiB|GiB|TiB|KB|MB|GB|TB) ok=1;; esac;; esac ;;
+      GOMAXPROCS)  case "$v" in [1-9]|[1-9][0-9]) ok=1;; esac ;;
+      GOTRACEBACK) case "$v" in none|single|all|system|crash) ok=1;; esac ;;
+      GODEBUG)     case "$v" in *[!A-Za-z0-9_,=.-]*) ;; *) ok=1;; esac ;;
+    esac
+    if [ "$ok" = 1 ]; then export "$k=$v"; else log "app.env : ligne refusee ($(echo "$k" | cut -c1-20)=$(echo "$v" | cut -c1-20))"; fi
+  done < "$QP/app.env"
+elif [ "$noenv" = 1 ]; then log "app.env ignore (factory arrete $fails fois de suite)"
+fi
+
+# 4. Surveillance mutuelle : si le surveillant ne tourne plus, le lanceur le relance (il relance l'application, et inversement)
+if [ -f "$QP/qp-guard" ] && [ -z "$QP_NO_GUARD" ]; then
+  rd gp "$RUN/guard.lock/pid" 0
+  if [ "$gp" = 0 ] || ! kill -0 "$gp" 2>/dev/null; then
+    log "surveillant absent : relance"
+    ( nohup sh "$QP/qp-guard" >/dev/null 2>&1 & )
+  fi
+fi
+
+# 5. Etat, puis remplacement par l'application (meme pid)
+put "$ST/running_slot" "$chosen"; put "$ST/run_boot" "$BOOT"; put "$ST/run_up" "$UP"; put "$ST/child" "$$"
+rm -f "$RUN/health"     # la sante ecrite par un lancement precedent ne doit jamais etre jugee pour celui-ci
+log "demarrage de $chosen ($(echo "$VSHA" | cut -c1-12))${GOGC:+ GOGC=$GOGC}${GOMEMLIMIT:+ GOMEMLIMIT=$GOMEMLIMIT}"
+# QP_EXEC_SH : seulement pour l'essai a blanc sur la camera, ou /tmp interdit l'execution (noexec) : le faux binaire y est lu par sh.
+if [ -n "$QP_EXEC_SH" ]; then exec sh "$BIN" "$@"; fi
+exec "$BIN" "$@"

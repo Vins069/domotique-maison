@@ -1,0 +1,76 @@
+[
+  {
+    "topic": "homeassistant/sensor/openqiara_32_battery/config",
+    "payload": {
+      "device": {
+        "identifiers": [
+          "openqiara_32"
+        ],
+        "manufacturer": "Qiara/Cofidur",
+        "model": "HOMELABSRN",
+        "name": "OpenQiara SRN 32",
+        "via_device": "openqiara_camera"
+      },
+      "device_class": "battery",
+      "entity_category": "diagnostic",
+      "json_attributes_topic": "openqiara/sensor/32/state",
+      "name": "Batterie",
+      "state_class": "measurement",
+      "state_topic": "openqiara/sensor/32/state",
+      "unique_id": "openqiara_srn_32_battery",
+      "unit_of_measurement": "%",
+      "value_template": "{{ value_json.battery }}"
+    }
+  },
+  {
+    "topic": "homeassistant/sensor/openqiara_32_temperature/config",
+    "payload": {
+      "device": {
+        "identifiers": [
+          "openqiara_32"
+        ],
+        "manufacturer": "Qiara/Cofidur",
+        "model": "HOMELABSRN",
+        "name": "OpenQiara SRN 32",
+        "via_device": "openqiara_camera"
+      },
+      "device_class": "temperature",
+      "json_attributes_topic": "openqiara/sensor/32/state",
+      "name": "Température",
+      "state_class": "measurement",
+      "state_topic": "openqiara/sensor/32/state",
+      "unique_id": "openqiara_srn_32_temperature",
+      "unit_of_measurement": "°C",
+      "value_template": "{{ value_json.temperature if value_json.temperature is defined else None }}"
+    }
+  },
+  {
+    "topic": "homeassistant/binary_sensor/openqiara_32_reachable/config",
+    "payload": {
+      "availability": [
+        {
+          "payload_available": "online",
+          "payload_not_available": "offline",
+          "topic": "openqiara/status"
+        }
+      ],
+      "device": {
+        "identifiers": [
+          "openqiara_32"
+        ],
+        "manufacturer": "Qiara/Cofidur",
+        "model": "HOMELABSRN",
+        "name": "OpenQiara SRN 32",
+        "via_device": "openqiara_camera"
+      },
+      "device_class": "connectivity",
+      "entity_category": "diagnostic",
+      "name": "Liaison radio",
+      "payload_off": "false",
+      "payload_on": "true",
+      "state_topic": "openqiara/sensor/32/state",
+      "unique_id": "openqiara_srn_32_reachable",
+      "value_template": "{{ value_json.reachable | lower }}"
+    }
+  }
+]

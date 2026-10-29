@@ -1,0 +1,6 @@
+/mnt/c/Users/utilisateur/Documents/simulateur-windows/travail-20261029-133351/Téléchargements/Dossier d'été (copie)/OpenQIARA-Claude-V15
+./preparer-carte-sd.sh
+--disque
+sdd
+--configuration
+/mnt/c/Users/utilisateur/Documents/simulateur-windows/travail-20261029-133351/scenarios/P19-paquet-dossier-accent-apostrophe/oqc-configuration-32484.txt

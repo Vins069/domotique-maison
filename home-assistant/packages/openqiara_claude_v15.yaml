@@ -1,0 +1,128 @@
+# OpenQIARA Claude V15 / QIARA Plus v10 : alertes de la camera Qiara dans Home Assistant.
+#
+# Installation :
+#   1. dans configuration.yaml, une seule fois :   homeassistant:
+#                                                     packages: !include_dir_named packages
+#   2. copier ce fichier dans /config/packages/ ;
+#   3. Outils de developpement > YAML > Verifier la configuration, puis redemarrer Home Assistant.
+#
+# Les entites de la camera sont creees par la decouverte MQTT, sans rien copier. Les identifiants ci-dessous sont ceux
+# que Home Assistant donne par defaut a l'appareil « OpenQiara Caméra ». Si vous avez renomme l'appareil, remplacez le
+# debut « openqiara_camera_ » par le votre (Parametres > Appareils et services > MQTT > OpenQiara Caméra).
+# Les alertes sont des notifications de Home Assistant (cloche). Pour les recevoir sur un telephone, ajouter sous
+# chaque « action » un appel a notify.mobile_app_<votre_telephone>.
+
+automation:
+  - id: openqiara_v15_camera_hors_ligne
+    alias: "Caméra Qiara : hors ligne depuis 5 minutes"
+    description: "OpenQiara ne répond plus sur MQTT (Wi-Fi, alimentation, démarrage en cours)."
+    mode: single
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.openqiara_camera_en_ligne
+        to: "off"
+        for: "00:05:00"
+      - trigger: state
+        entity_id: binary_sensor.openqiara_camera_en_ligne
+        to: "unavailable"
+        for: "00:05:00"
+    actions:
+      - action: persistent_notification.create
+        data:
+          notification_id: openqiara_v15_hors_ligne
+          title: "Caméra Qiara hors ligne"
+          message: >-
+            La caméra ne répond plus depuis 5 minutes ({{ now().strftime('%d/%m %H:%M') }}).
+            QIARA Plus relance le Wi-Fi puis la caméra d'elle-même si sa box ne répond plus.
+
+  - id: openqiara_v15_camera_de_retour
+    alias: "Caméra Qiara : de nouveau en ligne"
+    mode: single
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.openqiara_camera_en_ligne
+        from: "off"
+        to: "on"
+    actions:
+      - action: persistent_notification.dismiss
+        data:
+          notification_id: openqiara_v15_hors_ligne
+
+  - id: openqiara_v15_codec_different
+    alias: "Caméra Qiara : codec vidéo différent du réglage"
+    description: "hlcamd encode dans un autre codec que celui de la configuration (le flux est servi tel quel)."
+    mode: single
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.openqiara_camera_codec_video_different_du_reglage
+        to: "on"
+        for: "00:10:00"
+    actions:
+      - action: persistent_notification.create
+        data:
+          notification_id: openqiara_v15_codec
+          title: "Caméra Qiara : codec vidéo"
+          message: >-
+            Le flux est en {{ states('sensor.openqiara_camera_codec_video') }} alors que la configuration demande
+            {{ states('sensor.openqiara_camera_codec_video_configure') }}. Un redémarrage de la caméra remet hlcamd au réglage.
+
+  - id: openqiara_v15_redemarrage_automatique
+    alias: "Caméra Qiara : redémarrage par QIARA Plus"
+    description: "Le surveillant a redémarré la caméra (réseau muet, vidéo absente, ordre)."
+    mode: queued
+    triggers:
+      - trigger: state
+        entity_id: sensor.openqiara_camera_dernier_redemarrage_automatique
+        to: null   # changements d'etat seulement (pas ceux des attributs)
+    conditions:
+      # les redemarrages prevus (fin d'installation, reglage.sh) ne sont pas signales
+      - condition: template
+        value_template: >-
+          {{ trigger.from_state is not none and trigger.from_state.state not in ['unknown', 'unavailable', '']
+             and trigger.to_state.state not in ['unknown', 'unavailable', '', 'aucun']
+             and "fin d'installation" not in trigger.to_state.state
+             and "changement de reglage" not in trigger.to_state.state }}
+    actions:
+      - action: persistent_notification.create
+        data:
+          title: "Caméra Qiara redémarrée"
+          message: "Raison donnée par QIARA Plus : {{ trigger.to_state.state }}"
+
+  - id: openqiara_v15_essai_trop_long
+    alias: "Caméra Qiara : mise à jour en essai depuis 1 heure"
+    description: "Une version en essai n'est ni validée ni annulée (liaison MQTT absente pendant l'essai ?)."
+    mode: single
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.openqiara_camera_mise_a_jour_en_essai
+        to: "on"
+        for: "01:00:00"
+    actions:
+      - action: persistent_notification.create
+        data:
+          notification_id: openqiara_v15_essai
+          title: "Caméra Qiara : mise à jour en essai"
+          message: >-
+            Une version d'OpenQiara est en essai depuis une heure ({{ states('sensor.openqiara_camera_derniere_mise_a_jour') }}).
+            Elle est validée après 3 minutes de bonne santé avec MQTT connecté ; sinon, bouton « Annuler la mise à jour en essai ».
+
+  - id: openqiara_v15_place
+    alias: "Caméra Qiara : carte SD presque pleine"
+    mode: single
+    triggers:
+      - trigger: numeric_state
+        entity_id: sensor.openqiara_camera_donnees_occupees
+        above: 90
+        for: "00:30:00"
+      - trigger: numeric_state
+        entity_id: sensor.openqiara_camera_carte_sd_occupee
+        above: 90
+        for: "00:30:00"
+    actions:
+      - action: persistent_notification.create
+        data:
+          notification_id: openqiara_v15_place
+          title: "Caméra Qiara : place"
+          message: >-
+            /data occupée à {{ states('sensor.openqiara_camera_donnees_occupees') }} %,
+            carte SD (/media) à {{ states('sensor.openqiara_camera_carte_sd_occupee') }} %.

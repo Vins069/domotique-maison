@@ -1,0 +1,20 @@
+{
+  "name": "Salon",
+  "unique_id": "openqiara_pir_20",
+  "device_class": "motion",
+  "state_topic": "openqiara/sensor/20/state",
+  "value_template": "{{ value_json.motion | lower if value_json.motion is defined else '' }}",
+  "payload_on": "true",
+  "payload_off": "false",
+  "json_attributes_topic": "openqiara/sensor/20/state",
+  "json_attributes_template": "{\"battery\": {{ value_json.battery }}, \"reachable\": {{ value_json.reachable | lower }}}",
+  "device": {
+    "identifiers": [
+      "openqiara_20"
+    ],
+    "name": "Salon",
+    "manufacturer": "Qiara/Cofidur",
+    "model": "HOMELABPIR",
+    "via_device": "openqiara_camera"
+  }
+}

@@ -1,0 +1,100 @@
+name: Release
+
+# Déclenchement manuel via `git push origin v*`. Pas de release sur les
+# commits normaux — c'est volontaire pour garder un contrôle explicite
+# sur le versioning (cf. README et project_github_releases.md).
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history + tags so we can diff against the previous tag to
+          # build the changelog (git-log based — the repo commits straight to
+          # master without PRs, so GitHub's generate_release_notes lists
+          # nothing useful).
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      # CGo for the AAC-ELD encoder (internal/aaceld): zig cross-compiles
+      # against the camera's glibc 2.30.
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+
+      - name: Build daemon (linux/arm7)
+        run: |
+          GIT_COMMIT=$(git rev-parse --short HEAD)
+          BUILD_DATE=$(date -u +%Y-%m-%d)
+          CGO_ENABLED=1 CC="zig cc -target arm-linux-gnueabihf.2.30" \
+          GOOS=linux GOARCH=arm GOARM=7 go build \
+            -trimpath \
+            -ldflags="-s -w -X main.version=${GITHUB_REF_NAME} -X main.commit=${GIT_COMMIT} -X main.date=${BUILD_DATE}" \
+            -o openqiarad-linux-arm7 \
+            ./cmd/openqiarad
+
+      - name: Compress with UPX
+        # /data on the camera is ~20 MB and often <5 MB free. The raw ~10 MB
+        # binary doesn't fit, so the OTA swap truncates it. UPX brings it to
+        # ~2.8 MB, which fits; the binary self-extracts at exec.
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq upx-ucl
+          upx --best --lzma openqiarad-linux-arm7
+
+      - name: Smoke test
+        run: |
+          ls -la openqiarad-linux-arm7
+          file openqiarad-linux-arm7
+
+      - name: SHA256 checksums
+        run: sha256sum openqiarad-linux-arm7 scripts/sd_setup.sh scripts/sd_setup_ubuntu.sh scripts/fix_journal.sh scripts/camera_boot.sh > SHA256SUMS
+
+      - name: Generate release notes
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          # Tag précédent = le tag juste avant celui-ci par DATE de création
+          # (pas via git describe ^, qui remonte le graphe de commits et se
+          # trompe sur un re-tag pointant le même commit).
+          PREV=$(git tag --sort=-creatordate | grep -A1 -x "$TAG" | tail -n +2 | head -1)
+          {
+            if [ -z "$PREV" ]; then
+              echo "## Changements"; echo
+              git log --pretty="- %s" "$TAG"
+              echo; echo "_Première release._"
+            else
+              N=$(git log --oneline "$PREV..$TAG" | wc -l | tr -d ' ')
+              COMPARE="**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/compare/${PREV}...${TAG}"
+              if [ "$N" = "0" ]; then
+                echo "_Aucun changement de code depuis ${PREV} (re-tag)._"
+                echo; echo "$COMPARE"
+              else
+                echo "## Changements"; echo
+                git log --pretty="- %s" "$PREV..$TAG"
+                echo; echo "$COMPARE"
+              fi
+            fi
+          } > RELEASE_NOTES.md
+          echo "--- notes générées ---"; cat RELEASE_NOTES.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            openqiarad-linux-arm7
+            scripts/sd_setup.sh
+            scripts/sd_setup_ubuntu.sh
+            scripts/fix_journal.sh
+            scripts/camera_boot.sh
+            SHA256SUMS
+          body_path: RELEASE_NOTES.md
+          prerelease: ${{ contains(github.ref_name, '-alpha') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-rc') }}

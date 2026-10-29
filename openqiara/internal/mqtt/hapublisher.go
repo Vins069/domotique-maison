@@ -1,0 +1,695 @@
+package mqtt
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/url"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	mqtt "github.com/eclipse/paho.mqtt.golang"
+
+	"github.com/caligone/openqiara/internal/camera"
+)
+
+const (
+	qos            byte = 1
+	retained            = true
+	notRetained         = false
+	connectTimeout      = 10 * time.Second
+	publishTimeout      = 5 * time.Second
+
+	keepAlive            = 30 * time.Second
+	reconnectInterval    = 10 * time.Second
+	maxReconnectInterval = 30 * time.Second
+
+	// watchdogInterval is how often the watchdog checks the live connection.
+	// watchdogGrace is how long the client may stay disconnected before the
+	// watchdog forces a full Disconnect+Connect cycle — a belt-and-braces
+	// escape hatch for paho states that never fire ConnectionLostHandler.
+	watchdogInterval = 30 * time.Second
+	watchdogGrace    = 90 * time.Second
+
+	// statusOnline and statusOffline are what <prefix>/status holds: online
+	// from each connection, offline by the broker's last will when the
+	// camera drops off the network (a Wi-Fi association lost, a power cut),
+	// or by Close on a clean stop.
+	statusOnline  = "online"
+	statusOffline = "offline"
+)
+
+// statusTopic is where the camera says whether it is on the broker.
+func statusTopic(prefix string) string { return prefix + "/status" }
+
+// HAPublisher implements Publisher for Home Assistant MQTT auto-discovery.
+type HAPublisher struct {
+	mu      sync.Mutex
+	client  mqtt.Client
+	prefix  string // topic prefix, default "openqiara"
+	log     *slog.Logger
+	sensors []camera.Sensor // remembered for re-publish on (re)connect
+	cfg     Config          // remembered so the watchdog can rebuild the client
+
+	// onConnect is invoked after discovery is (re)published on every successful
+	// connection, letting the caller refresh live state (sensor/alarm). May be nil.
+	onConnect func()
+
+	diagKnown map[string]bool // diagnostic entities already discovered (mu)
+	seenSent  map[int]string  // (mu) last "last heard" time published per sensor, on this connection
+	tempKnown map[int]bool    // sensors whose temperature entity is discovered on this connection (mu)
+
+	reconnects atomic.Int64                // connections made, the first included
+	diagReset  atomic.Bool                 // a connection was made: discover the diagnostics again
+	linkUp     atomic.Bool                 // set by the connect/lost handlers (kept for the log); LinkUp asks paho itself
+	clientRef  atomic.Pointer[mqtt.Client] // the client, readable without p.mu
+	// brokerTCP: while the link is down, does the broker accept TCP connections? 0 unknown, 1 yes, 2 no.
+	// The guard restarts OpenQiara for a lost link only when the broker answers (Home Assistant
+	// stopped = nothing a restart could fix).
+	brokerTCP   atomic.Int32
+	probeOnce   sync.Once
+	qpInstalled atomic.Bool // Qiara Plus installed: its entities are published, else removed
+	qpCleaned   bool        // (mu) Qiara Plus entities removed on this connection
+	videoServed atomic.Bool // image settings served (hlcamd's parameters file read), else their entities removed
+
+	watchdogOnce sync.Once
+	disconnected time.Time // zero when connected; set on first observed disconnect
+
+	// subs are re-sent on every connection. Own lock: OnConnectHandler reads
+	// them while Connect may still hold mu.
+	subsMu sync.Mutex
+	subs   map[string]subscription
+}
+
+type subscription struct {
+	qos     byte
+	handler mqtt.MessageHandler
+}
+
+// SetOnConnect registers a callback invoked after discovery is (re)published on
+// each successful broker connection. Used to re-push live sensor/alarm state.
+func (p *HAPublisher) SetOnConnect(fn func()) {
+	p.mu.Lock()
+	p.onConnect = fn
+	p.mu.Unlock()
+}
+
+// NewHAPublisher creates a new HAPublisher.
+// If logger is nil, slog.Default() is used.
+func NewHAPublisher(logger *slog.Logger) *HAPublisher {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &HAPublisher{log: logger}
+}
+
+// Connect establishes the MQTT connection and publishes initial discovery configs.
+func (p *HAPublisher) Connect(ctx context.Context, cfg Config, sensors []camera.Sensor) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	prefix := cfg.TopicPrefix
+	if prefix == "" {
+		prefix = "openqiara"
+	}
+	p.prefix = prefix
+	p.sensors = sensors
+	p.cfg = cfg
+	p.probeOnce.Do(func() { go p.probeBroker(ctx, cfg.Broker) })
+
+	opts := mqtt.NewClientOptions().
+		AddBroker(cfg.Broker).
+		SetClientID("openqiara").
+		// Last will: the broker publishes "offline" on <prefix>/status when
+		// the connection dies without a DISCONNECT. Home Assistant can then
+		// tell a silent camera from a quiet house (the diagnostic entities
+		// use it as their availability; the alarm's sensors do not, on
+		// purpose).
+		SetWill(statusTopic(prefix), statusOffline, qos, retained).
+		SetCleanSession(false).
+		SetAutoReconnect(true).
+		// ConnectRetry rearms reconnection even when the very first Connect()
+		// fails (broker down at boot after a power cut). Without it, paho gives
+		// up permanently on initial failure.
+		SetConnectRetry(true).
+		SetConnectRetryInterval(reconnectInterval).
+		// Bound the reconnect backoff — paho's default max is 10 min, far too
+		// long for a home alarm to stay silent after a broker blip.
+		SetMaxReconnectInterval(maxReconnectInterval).
+		// KeepAlive forces regular PINGREQ so a socket that dies silently
+		// (broker reboot, NAT drop) is detected and reconnection kicks in.
+		// The camera has no RTC: a boot-time clock jump can otherwise leave
+		// paho's keepalive goroutine wedged with no lost-connection callback.
+		SetKeepAlive(keepAlive).
+		SetConnectTimeout(connectTimeout).
+		SetConnectionLostHandler(func(_ mqtt.Client, err error) {
+			p.linkUp.Store(false)
+			p.log.Warn("mqtt connection lost", "error", err)
+		}).
+		// Discovery is (re)published on every connection — including the very
+		// first one even if the broker was down at boot, and on each reconnect.
+		// Retained + idempotent, so HA always recovers without a daemon restart.
+		SetOnConnectHandler(func(_ mqtt.Client) {
+			p.log.Info("mqtt connected", "broker", cfg.Broker)
+			p.linkUp.Store(true)
+			p.reconnects.Add(1)
+			p.diagReset.Store(true)
+			p.republishDiscovery(ctx)
+			p.resubscribe()
+			p.mu.Lock()
+			fn := p.onConnect
+			p.mu.Unlock()
+			if fn != nil {
+				// In a goroutine: the callback re-publishes state (acquiring
+				// p.mu), but OnConnectHandler may run while Connect still holds
+				// p.mu — calling fn() inline would deadlock.
+				go fn()
+			}
+		})
+
+	if cfg.Username != "" {
+		opts.SetUsername(cfg.Username)
+		opts.SetPassword(cfg.Password)
+	}
+
+	// TLS: applied by paho only when the broker scheme is ssl://. A cert error
+	// fails Connect instead of silently downgrading to plaintext.
+	tlsCfg, err := buildTLSConfig(cfg)
+	if err != nil {
+		return fmt.Errorf("mqtt tls config: %w", err)
+	}
+	if tlsCfg != nil {
+		opts.SetTLSConfig(tlsCfg)
+	}
+
+	p.client = mqtt.NewClient(opts)
+	p.clientRef.Store(&p.client)
+	// Non-blocking: don't fail Start if the broker is unreachable at boot.
+	// paho reconnects in the background and OnConnectHandler publishes discovery.
+	token := p.client.Connect()
+	if !token.WaitTimeout(connectTimeout) {
+		p.log.Warn("mqtt connect timeout, will retry in background", "broker", cfg.Broker)
+	} else if err := token.Error(); err != nil {
+		p.log.Warn("mqtt connect failed, will retry in background", "broker", cfg.Broker, "error", err)
+	}
+
+	p.watchdogOnce.Do(func() { go p.watchdog(ctx) })
+
+	return nil
+}
+
+// watchdog is a last-resort recovery loop. paho's SetAutoReconnect handles the
+// common cases, but on this RTC-less camera a boot-time clock jump can wedge
+// paho with no ConnectionLostHandler firing and IsConnected() stuck false. If
+// the client stays disconnected beyond watchdogGrace, we force a full teardown
+// and reconnect. Runs until ctx is cancelled.
+func (p *HAPublisher) watchdog(ctx context.Context) {
+	ticker := time.NewTicker(watchdogInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			p.mu.Lock()
+			connected := p.client != nil && p.client.IsConnected()
+			if connected {
+				p.disconnected = time.Time{}
+				p.mu.Unlock()
+				continue
+			}
+			if p.disconnected.IsZero() {
+				p.disconnected = time.Now()
+				p.mu.Unlock()
+				continue
+			}
+			if time.Since(p.disconnected) < watchdogGrace {
+				p.mu.Unlock()
+				continue
+			}
+			client := p.client
+			p.disconnected = time.Now() // reset grace so we don't hammer
+			p.mu.Unlock()
+
+			p.log.Warn("mqtt watchdog: disconnected past grace, forcing reconnect",
+				"grace", watchdogGrace)
+			if client != nil {
+				p.linkUp.Store(false)
+				client.Disconnect(250)
+				token := client.Connect()
+				if token.WaitTimeout(connectTimeout) && token.Error() == nil {
+					p.log.Info("mqtt watchdog: reconnect ok")
+				} else {
+					p.log.Warn("mqtt watchdog: reconnect failed, will retry")
+				}
+			}
+		}
+	}
+}
+
+// republishDiscovery (re)publishes all retained discovery configs. Called from
+// OnConnectHandler, so it must NOT take p.mu (the lock may be held by Connect).
+func (p *HAPublisher) republishDiscovery(ctx context.Context) {
+	if err := p.publish(ctx, statusTopic(p.prefix), []byte(statusOnline), retained); err != nil {
+		p.log.Warn("status publish failed", "error", err)
+	}
+	p.tempKnown = map[int]bool{}
+	for _, s := range p.sensors {
+		if err := p.publishDiscovery(ctx, s); err != nil {
+			p.log.Warn("discovery publish failed", "sensor_id", s.ID, "error", err)
+		}
+		for _, extra := range buildExtraDiscoveryTopics(p.prefix, s) {
+			payload, err := json.Marshal(extra.Payload)
+			if err != nil {
+				continue
+			}
+			if err := p.publish(ctx, extra.Topic, payload, retained); err != nil {
+				p.log.Warn("extra discovery publish failed", "topic", extra.Topic, "error", err)
+			}
+		}
+		if s.Temperature != nil {
+			p.tempKnown[s.ID] = true
+		} else if _, ok := sensorTypeMap[s.Type]; ok || s.Type == "KPD" {
+			// No temperature ever: an entity of an earlier version, unknown for
+			// good, is removed (an empty retained config deletes it).
+			_ = p.publish(ctx, temperatureTopic(s.ID), []byte{}, retained)
+		}
+	}
+
+	p.PublishNoticeDiscovery(ctx)
+
+	shutterTopic, shutterPayload := ShutterDiscoveryPayload(p.prefix)
+	if err := p.publish(ctx, shutterTopic, shutterPayload, retained); err != nil {
+		p.log.Warn("shutter discovery failed", "error", err)
+	}
+
+	// The image settings: offered, or removed, at each connection.
+	p.publishVideoDiscovery(ctx)
+}
+
+// PublishShutterState publishes the shutter state to MQTT.
+func (p *HAPublisher) PublishShutterState(ctx context.Context, open bool) error {
+	state := "closed"
+	if open {
+		state = "open"
+	}
+	payload, _ := json.Marshal(map[string]string{"state": state})
+	return p.publish(ctx, p.prefix+"/shutter/state", payload, true)
+}
+
+// PublishIVDiscovery publishes the auto-discovery config for the two IV
+// binary_sensors (human + pet). Idempotent ; à appeler une fois au boot.
+func (p *HAPublisher) PublishIVDiscovery(ctx context.Context) error {
+	for _, kind := range []string{"human", "pet"} {
+		topic, payload := IVDetectionDiscoveryPayload(p.prefix, kind)
+		if err := p.publish(ctx, topic, payload, true); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// SyncIVEntities keeps the two IV entities in step with the camera's own
+// detection: published when it is wanted, removed (empty retained
+// discovery configs and states) when it is turned off for good, so that Home
+// Assistant shows no sensor that cannot detect anything.
+func (p *HAPublisher) SyncIVEntities(ctx context.Context, wanted bool) error {
+	if wanted {
+		return p.PublishIVDiscovery(ctx)
+	}
+	var first error
+	for _, kind := range []string{"human", "pet"} {
+		topic, _ := IVDetectionDiscoveryPayload(p.prefix, kind)
+		for _, t := range []string{topic, p.prefix + "/iv/" + kind + "/state"} {
+			if err := p.publish(ctx, t, []byte{}, true); err != nil && first == nil {
+				first = err
+			}
+		}
+	}
+	return first
+}
+
+// PublishIVDetection met à jour l'état d'un binary_sensor IV
+// (kind = "human" ou "pet"). detected = présence courante, confidence
+// 0..1, objectID = ID interne IV pour traçabilité.
+func (p *HAPublisher) PublishIVDetection(ctx context.Context, kind string, detected bool, confidence float64, objectID string) error {
+	payload, _ := json.Marshal(map[string]any{
+		"detected":   detected,
+		"confidence": confidence,
+		"object_id":  objectID,
+	})
+	return p.publish(ctx, p.prefix+"/iv/"+kind+"/state", payload, true)
+}
+
+// Subscribe subscribes to a raw MQTT topic with the given handler.
+// Used for custom integrations like listening to alarmo/state.
+func (p *HAPublisher) Subscribe(topic string, handler func(topic string, payload []byte)) {
+	p.subscribe(topic, 0, func(_ mqtt.Client, msg mqtt.Message) {
+		handler(msg.Topic(), msg.Payload())
+	})
+}
+
+// subscribe registers a subscription, re-sent on every (re)connection, and
+// sends it right away if the connection is open. paho never re-sends a
+// SUBSCRIBE by itself: CleanSession=false counts on the broker keeping the
+// session, which a broker restarted without persistence doesn't (#59).
+func (p *HAPublisher) subscribe(topic string, qos byte, handler mqtt.MessageHandler) {
+	if p.client == nil {
+		p.log.Warn("MQTT client nil, cannot subscribe", "topic", topic)
+		return
+	}
+	p.subsMu.Lock()
+	if p.subs == nil {
+		p.subs = map[string]subscription{}
+	}
+	p.subs[topic] = subscription{qos: qos, handler: handler}
+	p.subsMu.Unlock()
+
+	if p.client.IsConnectionOpen() {
+		p.sendSubscribe(topic, qos, handler)
+	}
+}
+
+// resubscribe re-sends every registered subscription. Called from
+// OnConnectHandler.
+func (p *HAPublisher) resubscribe() {
+	p.subsMu.Lock()
+	subs := make(map[string]subscription, len(p.subs))
+	for topic, s := range p.subs {
+		subs[topic] = s
+	}
+	p.subsMu.Unlock()
+
+	for topic, s := range subs {
+		p.sendSubscribe(topic, s.qos, s.handler)
+	}
+}
+
+func (p *HAPublisher) sendSubscribe(topic string, qos byte, handler mqtt.MessageHandler) {
+	token := p.client.Subscribe(topic, qos, handler)
+	go func() {
+		if !token.WaitTimeout(publishTimeout) {
+			p.log.Warn("mqtt subscribe timeout", "topic", topic)
+			return
+		}
+		if err := token.Error(); err != nil {
+			p.log.Warn("mqtt subscribe failed", "topic", topic, "error", err)
+			return
+		}
+		p.log.Info("mqtt subscribed", "topic", topic)
+	}()
+}
+
+// Unsubscribe removes a previous subscription.
+func (p *HAPublisher) Unsubscribe(topic string) {
+	p.subsMu.Lock()
+	delete(p.subs, topic)
+	p.subsMu.Unlock()
+	if p.client == nil || !p.client.IsConnected() {
+		return
+	}
+	p.client.Unsubscribe(topic)
+}
+
+// SetupShutterCommandHandler subscribes to shutter commands from HA.
+func (p *HAPublisher) SetupShutterCommandHandler(callback func(open bool), logger *slog.Logger) {
+	topic := p.prefix + "/shutter/set"
+	p.subscribe(topic, 1, func(_ mqtt.Client, msg mqtt.Message) {
+		cmd := string(msg.Payload())
+		// A retained command is replayed at every subscription, i.e. at
+		// every start: a retained "open" would open the privacy shutter at
+		// each boot. A command is a moment, never a state.
+		if msg.Retained() {
+			logger.Warn("retained shutter command ignored", "command", cmd)
+			return
+		}
+		logger.Info("shutter command received", "command", cmd)
+		switch cmd {
+		case "open", "OPEN":
+			callback(true)
+		case "close", "closed", "CLOSE":
+			callback(false)
+		}
+	})
+}
+
+// PublishState sends a sensor state update to MQTT.
+func (p *HAPublisher) PublishState(ctx context.Context, sensor camera.Sensor) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	payload, err := marshalState(sensor)
+	if err != nil {
+		return err
+	}
+
+	if sensor.Temperature != nil && p.tempKnown != nil && !p.tempKnown[sensor.ID] {
+		// Its first temperature: the entity is created before the state that feeds it.
+		topic, d := temperatureDiscovery(p.prefix, sensor)
+		if data, err := json.Marshal(d); err == nil {
+			if err := p.publish(ctx, topic, data, retained); err == nil {
+				p.tempKnown[sensor.ID] = true
+			}
+		}
+		// Remembered for the next connections, whose discovery would otherwise
+		// remove the entity again (p.sensors is the list taken at the start).
+		for i := range p.sensors {
+			if p.sensors[i].ID == sensor.ID {
+				t := *sensor.Temperature
+				p.sensors[i].Temperature = &t
+			}
+		}
+	}
+	topic := stateTopic(p.prefix, sensor.ID)
+	return p.publish(ctx, topic, payload, retained)
+}
+
+// PublishDiscovery sends HA auto-discovery config for a sensor.
+func (p *HAPublisher) PublishDiscovery(ctx context.Context, sensor camera.Sensor) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.publishDiscovery(ctx, sensor)
+}
+
+// publishDiscovery is the internal version (caller must hold mu).
+func (p *HAPublisher) publishDiscovery(ctx context.Context, sensor camera.Sensor) error {
+	topic, ok := buildDiscoveryTopic(sensor)
+	if !ok {
+		p.log.Debug("skipping discovery for unsupported sensor type", "type", sensor.Type, "id", sensor.ID)
+		return nil
+	}
+
+	disc, _ := buildDiscoveryPayload(p.prefix, sensor)
+	payload, err := json.Marshal(disc)
+	if err != nil {
+		return fmt.Errorf("marshal discovery: %w", err)
+	}
+
+	return p.publish(ctx, topic, payload, retained)
+}
+
+// RemoveDiscovery removes a sensor from HA by publishing empty retained messages on all discovery topics.
+func (p *HAPublisher) RemoveDiscovery(ctx context.Context, sensorID int) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Remove main entity + battery + temperature for all possible domains.
+	for _, meta := range sensorTypeMap {
+		topic := fmt.Sprintf("homeassistant/%s/openqiara_%d/config", meta.domain, sensorID)
+		_ = p.publish(ctx, topic, []byte{}, retained)
+	}
+	_ = p.publish(ctx, fmt.Sprintf("homeassistant/sensor/openqiara_%d_battery/config", sensorID), []byte{}, retained)
+	_ = p.publish(ctx, fmt.Sprintf("homeassistant/sensor/openqiara_%d_temperature/config", sensorID), []byte{}, retained)
+	_ = p.publish(ctx, fmt.Sprintf("homeassistant/event/openqiara_%d_notice/config", sensorID), []byte{}, retained)
+	_ = p.publish(ctx, fmt.Sprintf("homeassistant/binary_sensor/openqiara_%d_reachable/config", sensorID), []byte{}, retained)
+	// Also clear the state topic
+	_ = p.publish(ctx, fmt.Sprintf("%s/sensor/%d/state", p.prefix, sensorID), []byte{}, retained)
+	return nil
+}
+
+// SetupSirenCommandHandler subscribes to siren command topics.
+// callback receives (sensorID, "on" or "off").
+func (p *HAPublisher) SetupSirenCommandHandler(sensors []camera.Sensor, callback func(sensorID int, command string), logger *slog.Logger) {
+	for _, s := range sensors {
+		if s.Type != "SRN" {
+			continue
+		}
+		topic := fmt.Sprintf("%s/siren/%d/set", p.prefix, s.ID)
+		sensorID := s.ID
+		p.subscribe(topic, qos, func(_ mqtt.Client, msg mqtt.Message) {
+			cmd := string(msg.Payload())
+			// Retained: replayed at every start (a retained "true" would
+			// sound the siren at each boot). Ignored, see the shutter.
+			if msg.Retained() {
+				logger.Warn("retained siren command ignored", "command", cmd, "sensor_id", sensorID)
+				return
+			}
+			logger.Info("siren command from HA", "command", cmd, "sensor_id", sensorID)
+			if callback != nil {
+				callback(sensorID, cmd)
+			}
+		})
+	}
+}
+
+// Prefix returns the configured topic prefix.
+func (p *HAPublisher) Prefix() string {
+	return p.prefix
+}
+
+// probeBroker checks, once a minute and only while the link is down, that the
+// broker accepts a TCP connection. Cheap: nothing at all while connected.
+func (p *HAPublisher) probeBroker(ctx context.Context, broker string) {
+	hostport := broker
+	if u, err := url.Parse(broker); err == nil && u.Host != "" {
+		hostport = u.Host
+	}
+	if _, _, err := net.SplitHostPort(hostport); err != nil {
+		hostport = net.JoinHostPort(hostport, "1883")
+	}
+	t := time.NewTicker(time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		if p.linkUp.Load() {
+			p.brokerTCP.Store(1)
+			continue
+		}
+		c, err := net.DialTimeout("tcp", hostport, 3*time.Second)
+		if err != nil {
+			p.brokerTCP.Store(2)
+			continue
+		}
+		_ = c.Close()
+		p.brokerTCP.Store(1)
+	}
+}
+
+// BrokerReachable tells, while the link is down, whether the broker accepts
+// TCP connections (known=false before the first probe).
+func (p *HAPublisher) BrokerReachable() (known, ok bool) {
+	switch p.brokerTCP.Load() {
+	case 1:
+		return true, true
+	case 2:
+		return true, false
+	}
+	return false, false
+}
+
+// SetQPlusInstalled says whether Qiara Plus is installed (fixed for the
+// process's life: installing or removing it restarts OpenQiara).
+func (p *HAPublisher) SetQPlusInstalled(v bool) { p.qpInstalled.Store(v) }
+
+// LinkUp tells whether a connection to the broker is open right now. Unlike
+// IsConnected (true while paho retries, see its doc) it is false during an
+// outage, and it takes no lock: a publish stuck under p.mu cannot block it.
+func (p *HAPublisher) LinkUp() bool {
+	// paho's own state (connected, not connecting or reconnecting): the
+	// handlers' flag alone could be left behind by a late connection-lost
+	// callback. No p.mu: a publish stuck under it cannot block this.
+	c := p.clientRef.Load()
+	return c != nil && *c != nil && (*c).IsConnectionOpen()
+}
+
+// IsConnected reports the live MQTT connection state (paho auto-reconnects in
+// the background, so this can flip after Connect succeeded).
+func (p *HAPublisher) IsConnected() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.client != nil && p.client.IsConnected()
+}
+
+// PublishRaw publishes a raw payload with retain. Use it for discovery
+// configs and for state: those must survive a broker or Home Assistant
+// restart, since a subscriber that reconnects has no other way to learn
+// where things stand.
+func (p *HAPublisher) PublishRaw(ctx context.Context, topic string, payload []byte) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.publish(ctx, topic, payload, retained)
+}
+
+// PublishCommand publishes a one-shot command, never retained.
+//
+// A command is an action, not a state. The broker replays a retained
+// message to every subscriber that connects, so a retained ARM_AWAY makes
+// Alarmo re-arm itself from a stale value on each Home Assistant restart —
+// observed re-arming, and once triggering the siren.
+func (p *HAPublisher) PublishCommand(ctx context.Context, topic string, payload []byte) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.publish(ctx, topic, payload, notRetained)
+}
+
+// Close disconnects the MQTT client.
+func (p *HAPublisher) Close() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.client != nil && p.client.IsConnected() {
+		// A clean DISCONNECT does not fire the last will: say it.
+		_ = p.publish(context.Background(), statusTopic(p.prefix), []byte(statusOffline), retained)
+		p.linkUp.Store(false)
+		p.client.Disconnect(250)
+	}
+	return nil
+}
+
+// StatusTopic is the topic that says whether the camera is on the broker.
+func (p *HAPublisher) StatusTopic() string { return statusTopic(p.prefix) }
+
+// publish sends a message and respects context cancellation.
+func (p *HAPublisher) publish(_ context.Context, topic string, payload []byte, retain bool) error {
+	if p.client == nil || !p.client.IsConnected() {
+		return fmt.Errorf("mqtt client not connected")
+	}
+
+	token := p.client.Publish(topic, qos, retain, payload)
+	if !token.WaitTimeout(publishTimeout) {
+		return fmt.Errorf("mqtt publish timeout on %s", topic)
+	}
+	if err := token.Error(); err != nil {
+		return fmt.Errorf("mqtt publish %s: %w", topic, err)
+	}
+
+	p.log.Debug("mqtt published", "topic", topic, "size", len(payload))
+	return nil
+}
+
+// marshalState returns the JSON state payload for a sensor.
+func marshalState(s camera.Sensor) ([]byte, error) {
+	var v any
+	switch s.Type {
+	case "DWS":
+		v = dwsState{Open: knownState(s, s.Open), Battery: s.Battery, Reachable: s.Reachable, Temperature: s.Temperature}
+	case "PIR":
+		v = pirState{Motion: knownState(s, s.Motion), Battery: s.Battery, Reachable: s.Reachable, Temperature: s.Temperature}
+	case "SRN":
+		v = srnState{Active: s.SirenState == "alert", State: s.SirenState, Battery: s.Battery, Reachable: s.Reachable, Temperature: s.Temperature}
+	case "KPD":
+		v = kpdState{Battery: s.Battery, Reachable: s.Reachable, Temperature: s.Temperature}
+	default:
+		return nil, fmt.Errorf("unknown sensor type: %s", s.Type)
+	}
+	return json.Marshal(v)
+}
+
+// knownState is a door or motion state as published: nil, left out, until
+// the sensor reported it after a start, so that its battery or its
+// reachability can go out without overwriting the state Home Assistant
+// kept (the value_template renders nothing, and HA leaves the entity).
+func knownState(s camera.Sensor, state bool) *bool {
+	if !s.StateKnown() {
+		return nil
+	}
+	return &state
+}

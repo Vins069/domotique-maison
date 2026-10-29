@@ -1,0 +1,199 @@
+package alarm
+
+import (
+	"log/slog"
+	"sync"
+	"time"
+)
+
+// SirenRadio is the paired siren as the radio drives it
+// (cmd/openqiarad nativeSiren).
+type SirenRadio interface {
+	// Present tells whether a siren keeps the alarm (siren_sounds none
+	// leaves it out).
+	Present() bool
+	// Arm arms it for the mode; it takes that only when off.
+	Arm(night, delayed bool) error
+	EntryDelay() error
+	Alert() error
+	// Wail plays the test sound at full power: only an unarmed siren does.
+	Wail() error
+	Disarm() error
+	RequestState() error
+}
+
+// rearmEvery spaces out the re-arming of a siren found off while it should
+// be armed, so that one that keeps refusing does not loop.
+const rearmEvery = 5 * time.Second
+
+// SirenDriver keeps the siren in the state the alarm wants, whoever the
+// alarm's master is (the standalone engine or Alarmo). The siren answers
+// out of order, reboots, can be torn off: rather than guess which report
+// answers which command, the driver holds the wanted state and brings the
+// siren back to it on every report. Until a master says what it wants
+// (just after a start), the driver leaves the siren as it is: it may hold
+// an alarm it raised while the camera was down.
+type SirenDriver struct {
+	radio  SirenRadio
+	logger *slog.Logger
+
+	mu        sync.Mutex
+	want      sirenWant
+	night     bool       // the mode wanted, when armed
+	armed     *bool      // the mode the siren was last armed with, nil if not known
+	last      SirenState // its state as last reported, or as our last command leaves it; "" not known
+	delayed   *bool      // an arming waiting for the first report, and whether with the exit delay
+	lastRearm time.Time
+	retrying  bool // a re-arming put off by rearmEvery is due
+}
+
+type sirenWant int
+
+const (
+	wantUnknown sirenWant = iota
+	wantOff
+	wantArmed
+)
+
+// processStart and startupWindow tell a re-arming at start (expected) from
+// one later on (an anomaly worth a warning).
+var processStart = time.Now()
+
+const startupWindow = 2 * time.Minute
+
+// NewSirenDriver returns a driver that does nothing until told what to want.
+func NewSirenDriver(radio SirenRadio, logger *slog.Logger) *SirenDriver {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &SirenDriver{radio: radio, logger: logger}
+}
+
+// Present tells whether a siren keeps the alarm.
+func (d *SirenDriver) Present() bool { return d.radio.Present() }
+
+// Arm wants the siren armed for the mode, after the exit delay or at once.
+// A siren already in an alarm keeps it; one armed for another mode, or
+// for a mode not known, is armed again (off first: it takes an arming only
+// when off).
+func (d *SirenDriver) Arm(night, delayed bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.want, d.night = wantArmed, night
+	if !d.radio.Present() {
+		return
+	}
+	switch d.last {
+	case "":
+		d.delayed = &delayed // armed on its first report
+		d.err("state", d.radio.RequestState())
+	case SirenEntryDelay, SirenAlert, SirenAlertOver:
+	case SirenArmed, SirenExitDelay:
+		// Kept if armed for the mode already; an immediate arming ends an
+		// exit delay (Alarmo's was shorter than the siren's: set off
+		// during the rest of it, it would stay mute).
+		if d.armed != nil && *d.armed == night && (d.last == SirenArmed || delayed) {
+			return
+		}
+		d.err("disarm", d.radio.Disarm())
+		d.armLocked(delayed)
+	default:
+		d.armLocked(delayed)
+	}
+}
+
+// rearmLocked arms again a siren found off, at once and not more than
+// every rearmEvery: put off, it asks the siren's state again when due.
+func (d *SirenDriver) rearmLocked() {
+	if wait := rearmEvery - time.Since(d.lastRearm); wait > 0 {
+		if !d.retrying {
+			d.retrying = true
+			time.AfterFunc(wait, func() {
+				d.mu.Lock()
+				defer d.mu.Unlock()
+				d.retrying = false
+				if d.want == wantArmed {
+					d.err("state", d.radio.RequestState())
+				}
+			})
+		}
+		return
+	}
+	d.lastRearm = time.Now()
+	if time.Since(processStart) < startupWindow {
+		// The first report after a start often finds the siren off: the
+		// expected catch-up of a start, not an anomaly.
+		d.logger.Info("siren: off at start while it should be armed, arming it", "night", d.night)
+	} else {
+		d.logger.Warn("siren: off while it should be armed, arming it", "night", d.night)
+	}
+	d.armLocked(false)
+}
+
+// armLocked arms the siren, which is off or about to be: our commands go
+// out in order. Its state is taken as the one the arming leaves, until a
+// report says otherwise.
+func (d *SirenDriver) armLocked(delayed bool) {
+	night := d.night
+	d.armed, d.delayed = &night, nil
+	d.last = SirenArmed
+	if delayed {
+		d.last = SirenExitDelay
+	}
+	d.err("arm", d.radio.Arm(night, delayed))
+}
+
+// Disarm wants the siren off, and stops its sound. It is sent whether the
+// siren keeps the alarm or not (siren_sounds none): never left armed.
+func (d *SirenDriver) Disarm() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.want, d.armed, d.delayed = wantOff, nil, nil
+	d.last = SirenOff // it takes a disarm in any state
+	d.err("disarm", d.radio.Disarm())
+}
+
+// EntryDelay starts the siren's entry delay (an armed siren only).
+func (d *SirenDriver) EntryDelay() {
+	if d.radio.Present() {
+		d.err("entry delay", d.radio.EntryDelay())
+	}
+}
+
+// Alert sets the siren off: the alert if it is armed, else the test sound
+// at full power. Both go, each taken only in its state: no guessing from a
+// report that may be late.
+func (d *SirenDriver) Alert() {
+	if d.radio.Present() {
+		d.err("alert", d.radio.Alert())
+		d.err("wail", d.radio.Wail())
+	}
+}
+
+// HandleReport takes a report of the siren and brings it back to the
+// wanted state: armed while it should be off, disarmed; off while it
+// should be armed (it rebooted, an arming was lost), armed again at once.
+func (d *SirenDriver) HandleReport(s SirenState) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.last = s
+	switch {
+	case !d.radio.Present() && s != SirenOff && s != SirenTest:
+		d.logger.Warn("siren: armed while left out of the alarm, disarming it", "siren", s)
+		d.err("disarm", d.radio.Disarm())
+	case !d.radio.Present():
+	case d.want == wantOff && s != SirenOff && s != SirenTest:
+		d.logger.Warn("siren: armed while it should be off, disarming it", "siren", s)
+		d.err("disarm", d.radio.Disarm())
+	case d.want == wantArmed && s == SirenOff && d.delayed != nil:
+		d.armLocked(*d.delayed) // the arming that waited for this report
+	case d.want == wantArmed && s == SirenOff:
+		d.rearmLocked()
+	}
+}
+
+func (d *SirenDriver) err(what string, err error) {
+	if err != nil {
+		d.logger.Error("siren: "+what+" failed", "error", err)
+	}
+}

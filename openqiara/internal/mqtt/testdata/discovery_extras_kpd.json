@@ -1,0 +1,54 @@
+[
+  {
+    "topic": "homeassistant/sensor/openqiara_29_battery/config",
+    "payload": {
+      "device": {
+        "identifiers": [
+          "openqiara_29"
+        ],
+        "manufacturer": "Qiara/Cofidur",
+        "model": "HOMELABKPD",
+        "name": "OpenQiara KPD 29",
+        "via_device": "openqiara_camera"
+      },
+      "device_class": "battery",
+      "entity_category": "diagnostic",
+      "json_attributes_topic": "openqiara/sensor/29/state",
+      "name": "Batterie",
+      "state_class": "measurement",
+      "state_topic": "openqiara/sensor/29/state",
+      "unique_id": "openqiara_kpd_29_battery",
+      "unit_of_measurement": "%",
+      "value_template": "{{ value_json.battery }}"
+    }
+  },
+  {
+    "topic": "homeassistant/binary_sensor/openqiara_29_reachable/config",
+    "payload": {
+      "availability": [
+        {
+          "payload_available": "online",
+          "payload_not_available": "offline",
+          "topic": "openqiara/status"
+        }
+      ],
+      "device": {
+        "identifiers": [
+          "openqiara_29"
+        ],
+        "manufacturer": "Qiara/Cofidur",
+        "model": "HOMELABKPD",
+        "name": "OpenQiara KPD 29",
+        "via_device": "openqiara_camera"
+      },
+      "device_class": "connectivity",
+      "entity_category": "diagnostic",
+      "name": "Liaison radio",
+      "payload_off": "false",
+      "payload_on": "true",
+      "state_topic": "openqiara/sensor/29/state",
+      "unique_id": "openqiara_kpd_29_reachable",
+      "value_template": "{{ value_json.reachable | lower }}"
+    }
+  }
+]

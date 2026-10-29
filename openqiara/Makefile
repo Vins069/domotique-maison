@@ -1,0 +1,40 @@
+BINARY_DAEMON = bin/openqiarad
+
+GOFLAGS = -trimpath
+LDFLAGS = -s -w
+
+# Camera target: ARM Linux (Sigmastar SoC)
+GOOS_CAM   = linux
+GOARCH_CAM = arm
+GOARM_CAM  = 7
+
+.PHONY: all build daemon test lint clean
+
+all: build
+
+build: daemon
+
+# CGo for the AAC-ELD encoder (internal/aaceld): zig cross-compiles
+# against the camera's glibc 2.30 (brew install zig).
+CC_CAM = zig cc -target arm-linux-gnueabihf.2.30
+
+daemon:
+	CGO_ENABLED=1 CC="$(CC_CAM)" GOOS=$(GOOS_CAM) GOARCH=$(GOARCH_CAM) GOARM=$(GOARM_CAM) \
+		go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINARY_DAEMON) ./cmd/openqiarad
+	@# Compress with UPX if available — the camera's /data partition is ~20MB
+	@# so a 9.6MB binary leaves little headroom for logs and upgrades.
+	@if command -v upx >/dev/null 2>&1; then \
+		echo "Compressing with upx..."; \
+		upx --best --lzma -q $(BINARY_DAEMON) 2>&1 | tail -1; \
+	else \
+		echo "WARNING: upx not found — binary will be ~10MB (install: brew install upx)"; \
+	fi
+
+test:
+	go test -race -count=1 ./...
+
+lint:
+	golangci-lint run ./...
+
+clean:
+	rm -rf bin/

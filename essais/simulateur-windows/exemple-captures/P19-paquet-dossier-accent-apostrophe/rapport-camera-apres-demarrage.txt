@@ -1,0 +1,14 @@
+Rapport d'installation OpenQIARA Claude V15 / QIARA Plus v10 - 2026-10-29 13:47:00
+
+OK   OpenQiara en marche (pid 7157, depuis 94 s)
+OK   interface web : port 80 ouvert
+OK   QIARA Plus installe : emplacement en service good
+OK   surveillant en marche (pid 7176)
+OK   hlcamd : --iv-detection 1 --use-h265 --1080p-bitrate 2500000 --gop-denum 1 
+OK   liaison MQTT etablie (Home Assistant)
+--   configuration video : "video": { "lock": false, "codec": "h265", "bitrate": 2500000, "gop_denum": 1, "iv_detection": true }
+OK   reglages par defaut appliques
+OK   services du cloud neutralises (retour : sh /media/oqc/services-cloud.sh retour)
+--   place libre : /data 11536 Kio, /media 202776 Kio
+
+RESULTAT : installation reussie
