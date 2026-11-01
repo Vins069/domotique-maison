@@ -6,7 +6,6 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -47,14 +46,6 @@ func frame(f int64) []camera.Sample {
 
 // fakeCamera sends frames as fast as every period.
 func fakeCamera(period time.Duration) func(ctx context.Context) (<-chan camera.Sample, error) {
-	return fakeCameraBefore(period, nil)
-}
-
-// fakeCameraBefore is fakeCamera with a hook run in the stream's own order,
-// before each frame: what the hub does with the codec state in production
-// (an SPS flips the state before it is delivered), so that a test turning
-// the state does it at the right moment rather than at a random one.
-func fakeCameraBefore(period time.Duration, before func(f int64)) func(ctx context.Context) (<-chan camera.Sample, error) {
 	return func(ctx context.Context) (<-chan camera.Sample, error) {
 		out := make(chan camera.Sample)
 		go func() {
@@ -62,9 +53,6 @@ func fakeCameraBefore(period time.Duration, before func(f int64)) func(ctx conte
 			tick := time.NewTicker(period)
 			defer tick.Stop()
 			for f := int64(0); ; f++ {
-				if before != nil {
-					before(f)
-				}
 				for _, s := range frame(f) {
 					select {
 					case out <- s:
@@ -269,72 +257,63 @@ func TestRecordingEndsWithTheStream(t *testing.T) {
 	parse(t, got[0], got[1:]...)
 }
 
-// h265SPS is the SPS of the synthetic H.265 stream, what turns the codec
-// state to H.265.
-func h265SPS(t *testing.T) []byte {
-	t.Helper()
-	for _, n := range camera.SplitNALUnits(fakehlcamd.H265()) {
-		if nal.H265Type(n) == nal.H265SPS {
-			return n
-		}
-	}
-	t.Fatal("no H.265 SPS")
-	return nil
-}
-
-// A stream that is not H.264 is refused: nothing is kept in
-// the prebuffer, a recording is refused, and everything resumes once the
-// stream is H.264 again.
+// A camera configured in H.265 is refused: nothing is kept in
+// the prebuffer and a recording is refused. A stream contradicting an
+// H.264 setting is no matter of the recorder's: the hub drops it.
 func TestRecorderRefusesNonH264(t *testing.T) {
-	st := nal.NewState(nal.H264, quiet)
-	if !st.Observe(h265SPS(t)) || st.Effective() != nal.H265 {
-		t.Fatal("state")
-	}
+	st := nal.NewState(nal.H265, quiet)
 	r := NewRecorder(4000, quiet)
 	r.SetCodecState(st)
-	// The return to H.264 is done as the hub would do it: on the SPS of a
-	// key frame, right before it goes out (done from the test at a
-	// random moment, the state could turn between the SPS and the IDR of a
-	// frame, and the prebuffer started on a bare IDR, 4 runs out of 60).
-	var backToH264 atomic.Bool
-	hub := mediahub.New("fake", fakeCameraBefore(5*time.Millisecond, func(f int64) {
-		if f%15 == 0 && backToH264.CompareAndSwap(true, false) {
-			st.Observe(testSPS)
-		}
-	}), nil, quiet)
-	r.SetHub(hub)
+	r.SetHub(mediahub.New("fake", fakeCamera(5*time.Millisecond), nil, quiet))
 	r.SetActive(true)
 	defer r.SetActive(false)
 	time.Sleep(300 * time.Millisecond)
 	r.mu.Lock()
 	kept, refused := len(r.buf.samples), r.refused
 	r.mu.Unlock()
-	if kept != 0 || !refused || st.Effective() != nal.H265 {
-		t.Fatalf("%d samples kept of an H.265 stream, refused %v", kept, refused)
+	if kept != 0 || !refused {
+		t.Fatalf("%d samples kept under the H.265 setting, refused %v", kept, refused)
 	}
 	err := r.Record(context.Background(), Options{FragmentMs: 1000}, func([]byte, bool) error { return nil })
 	if !errors.Is(err, ErrNotH264) {
 		t.Fatalf("Record: %v", err)
 	}
-	// Back to H.264: the prebuffer fills again from the SPS of an IDR.
-	backToH264.Store(true)
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		r.mu.Lock()
-		kept, refused = len(r.buf.samples), r.refused
-		r.mu.Unlock()
-		if kept > 0 && !refused {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("nothing kept after the stream came back to H.264 (%d, refused %v)", kept, refused)
-		}
-		time.Sleep(20 * time.Millisecond)
+}
+
+// A stream that turns to another codec than the H.264 setting:
+// the hub drops its video, the audio goes on; the recorder empties its
+// prebuffer, keeps nothing while it lasts, and starts again when the
+// stream is back.
+func TestRecorderEmptiesPrebufferOnMismatch(t *testing.T) {
+	st := nal.NewState(nal.H264, quiet)
+	r := NewRecorder(4000, quiet)
+	r.SetCodecState(st)
+	r.SetHub(newHub(t))
+	r.SetActive(true)
+	defer r.SetActive(false)
+	waitPrebuffer(t, r)
+
+	sps := fakehlcamd.AccessUnits(nal.H265, fakehlcamd.Stream(nal.H265), false)[0]
+	for _, n := range sps {
+		st.Observe(n)
 	}
-	r.mu.Lock() // the watch goroutine still adds to the buffer (data race seen by go test -race)
-	snap := r.buf.snapshot()
+	if !st.Mismatch() {
+		t.Fatal("no mismatch after an H.265 SPS")
+	}
+	time.Sleep(200 * time.Millisecond) // audio and video samples keep coming
+	r.mu.Lock()
+	kept, flagged := len(r.buf.samples), r.mismatch
 	r.mu.Unlock()
-	if nalType(snap[0].Data) != nalSPS {
-		t.Fatalf("prebuffer starts with NAL type %d", nalType(snap[0].Data))
+	if kept != 0 || !flagged {
+		t.Fatalf("%d samples kept during the mismatch, flagged %v", kept, flagged)
 	}
+
+	h264 := fakehlcamd.AccessUnits(nal.H264, fakehlcamd.Stream(nal.H264), false)[0]
+	for _, n := range h264 {
+		st.Observe(n)
+	}
+	if st.Mismatch() {
+		t.Fatal("still a mismatch after an H.264 SPS")
+	}
+	waitPrebuffer(t, r)
 }

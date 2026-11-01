@@ -1,5 +1,5 @@
 #!/bin/bash
-# Essais des ajouts de la distribution OpenQIARA Claude V15 a QIARA Plus v10 : installation sans post_boot.sh (camera
+# Essais des ajouts de la distribution OpenQIARA Claude V16 a QIARA Plus v10 : installation sans post_boot.sh (camera
 # preparee par l'outil amont), guard.conf de l'installeur conserve et lu (SSH_SECOURS_PORT), ordres de redemarrage
 # nommes (reboot-installation, reboot-reglage). Meme banc que test-setup.sh.
 . "$(dirname "$0")/lib.sh"
@@ -39,7 +39,7 @@ cleanup; rm -rf $R/guard.lock   # verrou du surveillant arrete de force par clea
 printf 'TICK=1\nSLOW_SEC=100\nNET_CHECK_SEC=100\nENABLE_WIFI_ACTIONS=0\nENABLE_REBOOT=1\nGATEWAY=127.0.0.1\n' > $Q/guard.conf
 mkdir -p $R/cmd; : > $R/cmd/reboot-installation; : > $T/calls
 guardonce >/dev/null 2>&1; sleep 2
-grep -q "REDEMARRAGE de la camera : ordre HA (fin d'installation OpenQIARA Claude V15)" $D/openqiarad.log && ok "reboot-installation : raison journalisee" || ko "journal : $(grep -i redemarrage $D/openqiarad.log | tail -2)"
+grep -q "REDEMARRAGE de la camera : ordre HA (fin d'installation OpenQIARA Claude V16)" $D/openqiarad.log && ok "reboot-installation : raison journalisee" || ko "journal : $(grep -i redemarrage $D/openqiarad.log | tail -2)"
 grep -q 'reboot' $T/calls && ok "reboot-installation : redemarrage demande" || ko "pas de reboot : $(cat $T/calls)"
 rm -rf $Q/state/rate_* 2>/dev/null; : > $T/calls; : > $R/cmd/reboot-reglage
 guardonce >/dev/null 2>&1; sleep 2

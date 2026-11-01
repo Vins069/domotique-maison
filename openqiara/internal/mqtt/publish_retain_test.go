@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 // Only Publish and Subscribe need real behaviour; the rest satisfies the
 // interface.
 type recordingClient struct {
+	mu         sync.Mutex // Publish and Subscribe may be called from several goroutines
 	published  []recordedPublish
 	subscribed []string
 	closed     bool // connection not open
@@ -27,6 +29,8 @@ type recordedPublish struct {
 
 func (c *recordingClient) Publish(topic string, _ byte, retain bool, payload any) mqtt.Token {
 	b, _ := payload.([]byte)
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.published = append(c.published, recordedPublish{topic: topic, retain: retain, payload: string(b)})
 	return doneToken{}
 }
@@ -36,6 +40,8 @@ func (c *recordingClient) IsConnectionOpen() bool { return !c.closed }
 func (c *recordingClient) Connect() mqtt.Token    { return doneToken{} }
 func (c *recordingClient) Disconnect(uint)        {}
 func (c *recordingClient) Subscribe(topic string, _ byte, _ mqtt.MessageHandler) mqtt.Token {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.subscribed = append(c.subscribed, topic)
 	return doneToken{}
 }

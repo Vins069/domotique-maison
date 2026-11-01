@@ -7,13 +7,15 @@ import (
 )
 
 // State is the codec of the camera's stream as OpenQiara knows it: the one
-// configured (video.codec, what hlcamd was told to encode) and the one the
-// stream itself shows on its sequence parameter sets. Every consumer of the
-// media hub (RTSP, HLS, HomeKit, HomeKit Secure Video) serves Effective():
-// the detected codec once an SPS has been seen, the configured one before.
-// A stream that contradicts the setting is served as it is, never as the
-// setting says, and OnChange tells the daemon so that it logs and publishes
-// the mismatch.
+// configured (video.codec in openqiara.json, what every launch of hlcamd
+// is told to encode) and the one the stream itself shows on its sequence
+// parameter sets. The codec served by every consumer of the media hub
+// (RTSP, HLS, HomeKit, HomeKit Secure Video) is always Configured(): it is
+// fixed for the life of the daemon, and changing it means restarting
+// openqiarad, which reads the setting again. The detected codec only
+// checks the setting: a stream that contradicts it is never served as the
+// configured codec (the media hub drops its units, see Admit), and
+// OnChange tells the daemon so that it logs and publishes the mismatch.
 type State struct {
 	configured Codec
 	detected   atomic.Uint32
@@ -38,25 +40,31 @@ func NewState(configured Codec, logger *slog.Logger) *State {
 	return &State{configured: configured, log: logger}
 }
 
-// Configured is the codec of the setting (H.264 when the setting is absent).
+// Configured is the codec of the setting (H.264 when the setting is
+// absent), the one served.
 func (s *State) Configured() Codec { return s.configured }
 
-// Detected is the codec the stream showed, Unknown before any SPS.
+// Detected is the codec the stream showed on its last SPS, Unknown before
+// any.
 func (s *State) Detected() Codec { return Codec(s.detected.Load()) }
 
-// Effective is the codec to serve: Detected, or Configured until an SPS
-// came.
-func (s *State) Effective() Codec {
-	if d := s.Detected(); d != Unknown {
-		return d
-	}
-	return s.configured
-}
-
-// Mismatch tells whether the stream showed a codec other than the setting.
+// Mismatch tells whether the stream showed a codec other than the setting
+// (from that codec's SPS until an SPS of the configured codec).
 func (s *State) Mismatch() bool {
 	d := s.Detected()
 	return d != Unknown && d != s.configured
+}
+
+// Admit observes one video NAL unit of the stream and tells whether it may
+// be served as the configured codec. It may not while the stream shows
+// another codec (Mismatch), nor when its header is one of the other
+// codec's that no encoder of the configured codec makes (Foreign: the
+// parameter sets and delimiters that come before the SPS which proves the
+// other codec). The media hub calls it on every video sample, before any
+// subscriber gets it.
+func (s *State) Admit(nal []byte) bool {
+	s.Observe(nal)
+	return !s.Mismatch() && !Foreign(s.configured, nal)
 }
 
 // Observe looks at one video NAL unit from the stream and records its
@@ -84,10 +92,10 @@ func (s *State) Observe(nal []byte) bool {
 	s.detected.Store(uint32(c))
 	w, h := Dimensions(c, nal)
 	if c != s.configured {
-		s.log.Error("video: le flux de hlcamd n'est pas dans le codec configuré : il est servi tel quel",
+		s.log.Error("video: le flux de hlcamd n'est pas dans le codec configuré : il n'est pas servi (relancer openqiarad après avoir corrigé video.codec ou hlcamd)",
 			"configure", s.configured.String(), "flux", c.String(), "largeur", w, "hauteur", h)
 	} else if cur != Unknown {
-		s.log.Warn("video: le flux est revenu au codec configuré", "codec", c.String(), "largeur", w, "hauteur", h)
+		s.log.Warn("video: le flux est revenu au codec configuré, il est de nouveau servi", "codec", c.String(), "largeur", w, "hauteur", h)
 	} else {
 		s.log.Info("video: codec du flux confirmé", "codec", c.String(), "largeur", w, "hauteur", h)
 	}
@@ -108,13 +116,6 @@ type Counter struct {
 func (k *Counter) Add(c Codec, nal []byte) {
 	switch c {
 	case H264:
-		// An H.265 VPS read under the H.264 setting (the stream contradicts
-		// it; the state only switches on the SPS that follows) would count
-		// as an unspecified H.264 unit: count it as the VPS it is.
-		if len(nal) >= 2 && nal[0] == 0x40 && nal[1] == 0x01 {
-			k.vps.Add(1)
-			return
-		}
 		switch H264Type(nal) {
 		case H264SPS:
 			k.sps.Add(1)

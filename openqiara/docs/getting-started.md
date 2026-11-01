@@ -23,7 +23,7 @@ en reverse engineering.
   si tu as besoin de récupération offline — pas requis pour le happy path)
 
 **Sur ton ordinateur :**
-- Linux ou macOS avec Go 1.26+ installé
+- Linux, macOS ou Windows avec WSL2, avec Go 1.26+ installé
 - Une paire de clés SSH (`~/.ssh/id_ed25519` fait l'affaire)
 
 **Sur ton réseau :**
@@ -52,19 +52,23 @@ arp -a | grep -i lwip
 
 Tu devrais voir une entrée, du genre `192.168.1.50`.
 
-Si ta caméra a été factory-resettée ou jamais provisionnée, il faudra préparer
-la SD offline d'abord — voir [`install.md`](install.md) pour la procédure de
-préparation SD. Reviens ici une fois que tu as l'accès SSH.
-
 Teste la connexion :
 
 ```bash
 ssh root@192.168.1.50
 ```
 
-Le rootfs stock de la caméra autorise le login root via SSH sans mot de passe.
-**Ajoute ta clé publique à `/root/.ssh/authorized_keys`** dès que tu es dedans
-— tu te remercieras plus tard.
+**La caméra n'accepte que l'authentification par clé publique — jamais de mot
+de passe.** Et la seule clé autorisée est celle que tu as écrite dans
+`/data/ssh_authorized_keys` sur la SD : `camera_boot.sh` la recopie vers
+`/root/.ssh/authorized_keys` à chaque boot (écrire directement dans
+`/root/.ssh` est donc inutile, c'est écrasé au reboot).
+
+Sur une caméra stock, ce fichier ne contient pas ta clé → tu obtiendras
+`Permission denied (publickey)`. C'est attendu : il faut d'abord **retirer la
+microSD et la préparer offline** avec `sd_setup.sh --ssh-pubkey`
+(`sd_setup_wsl.sh` sous Windows), voir
+[`install.md`](install.md). Reviens ici une fois que tu as l'accès SSH.
 
 ---
 

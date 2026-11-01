@@ -1,10 +1,11 @@
 // Package hlsserver serves the camera as HLS, from the media hub, in place
 // of the vendor's hls: the 1080p stream and, with the multicast source,
-// the microphone as AAC-LC. In H.264, MPEG-TS segments every player reads
-// (Safari, VLC, Home Assistant); in H.265, fragmented MP4
-// segments (hvc1): gohlslib's MPEG-TS variant takes H.264 only, and HLS
-// players expect HEVC in fMP4 anyway. The URLs stay those hls served:
-// /stream/HLS_TEST.m3u8 and /stream/720p/HLS_TEST.m3u8.
+// the microphone as AAC-LC, in the codec video.codec configures. In H.264,
+// MPEG-TS segments every player reads (Safari, VLC, Home Assistant); in
+// H.265, fragmented MP4 segments (hvc1): gohlslib's MPEG-TS
+// variant takes H.264 only, and HLS players expect HEVC in fMP4 anyway.
+// The URLs stay those hls served: /stream/HLS_TEST.m3u8 and
+// /stream/720p/HLS_TEST.m3u8.
 //
 // The muxer runs only while someone watches: it starts with the first
 // request and stops once requests stop.
@@ -43,7 +44,8 @@ type Server struct {
 	// idleStop is how long the muxer outlives the last request: players
 	// reload the playlist every segment or so.
 	idleStop time.Duration
-	// codec is the stream's codec state; nil: H.264 for good.
+	// codec is the stream's codec state: its configured codec
+	// is the one served; nil: H.264.
 	codec *nal.State
 
 	mu       sync.Mutex
@@ -55,7 +57,7 @@ type Server struct {
 // run is one muxing session, from the first request to idleStop.
 type run struct {
 	cancel context.CancelFunc
-	ready  chan struct{} // closed once muxer is set, or once the run ended without one
+	ready  chan struct{} // closed once muxer is set
 	muxer  *gohlslib.Muxer
 }
 
@@ -71,11 +73,12 @@ func New(hub *mediahub.Hub, audio bool, logger *slog.Logger) *Server {
 // SetCodecState attaches the stream's codec state, the one the hub feeds.
 func (s *Server) SetCodecState(st *nal.State) { s.codec = st }
 
-func (s *Server) effective() nal.Codec {
+// configured is the codec served: the setting's, H.264 without a state.
+func (s *Server) configured() nal.Codec {
 	if s.codec == nil {
 		return nal.H264
 	}
-	return s.codec.Effective()
+	return s.codec.Configured()
 }
 
 // ServeHTTP serves the playlists and segments under /stream/.
@@ -90,12 +93,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = w.Write([]byte(`{"error":"aucune image (clapet fermé ?)"}`))
-		return
-	}
-	if rn.muxer == nil { // the run ended before it could start (the stream changed codec)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = w.Write([]byte(`{"error":"flux interrompu, réessayer"}`))
 		return
 	}
 	// hls's playlist names, in both folders, are the muxer's main one.
@@ -154,14 +151,14 @@ func (s *Server) stopWhenIdle(ctx context.Context, rn *run) {
 
 // mux reads the hub until ctx ends: the muxer starts at the first
 // parameter sets (SPS and PPS; VPS too in H.265), which it needs for the
-// playlist. The run serves the codec effective when it starts; the stream
-// changing codec ends it, and the next request starts afresh.
+// playlist. It serves the configured codec; the hub lets through no
+// unit of another.
 func (s *Server) mux(ctx context.Context, rn *run) {
 	sub := s.hub.Subscribe()
 	defer sub.Close()
 	defer s.drop(rn)
 
-	codec := s.effective()
+	codec := s.configured()
 	var vps, sps, pps []byte
 	var au [][]byte
 	var auPTS int64
@@ -231,6 +228,14 @@ func (s *Server) mux(ctx context.Context, rn *run) {
 			if !ok {
 				return
 			}
+			// a stream in another codec than the setting ends
+			// the muxer (its video is dropped by the hub, its timestamps
+			// may jump back when it returns); the next request starts a
+			// fresh one once the stream is back in the configured codec.
+			if rn.muxer != nil && s.codec != nil && s.codec.Mismatch() {
+				s.log.Warn("hls: flux d'un autre codec que le réglage, muxer arrêté")
+				return
+			}
 			if !sample.IsVideo {
 				if aac == nil {
 					continue
@@ -244,10 +249,6 @@ func (s *Server) mux(ctx context.Context, rn *run) {
 					s.log.Warn("hls: aac encode", "error", err)
 				}
 				continue
-			}
-			if c := s.effective(); c != codec {
-				s.log.Warn("hls: le flux change de codec, muxer arrêté", "servi", codec.String(), "flux", c.String())
-				return
 			}
 			if len(au) > 0 && sample.PTS != auPTS {
 				flush()
@@ -274,8 +275,6 @@ func (s *Server) mux(ctx context.Context, rn *run) {
 }
 
 // drop closes rn's muxer and forgets rn: the next request starts afresh.
-// A run that ends before its muxer started releases the requests waiting
-// on it (they answer 503 at once, instead of after readyWait).
 func (s *Server) drop(rn *run) {
 	s.mu.Lock()
 	if s.run == rn {
@@ -286,7 +285,5 @@ func (s *Server) drop(rn *run) {
 	if rn.muxer != nil {
 		rn.muxer.Close()
 		s.log.Info("hls: muxer stopped")
-	} else {
-		close(rn.ready)
 	}
 }

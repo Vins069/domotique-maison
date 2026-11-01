@@ -1,8 +1,8 @@
-// Package rtspserver exposes the camera's stream, H.264 or H.265,
-// as a standard RTSP service for Scrypted, Frigate or VLC,
-// from the media hub that feeds the HomeKit path too. With the multicast
-// source, the microphone comes along as AAC-LC (RFC 3640), encoded here
-// from the hub's PCM.
+// Package rtspserver exposes the camera's stream, H.264 or H.265 as
+// video.codec says, as a standard RTSP service for Scrypted,
+// Frigate or VLC, from the media hub that feeds the HomeKit path too. With
+// the multicast source, the microphone comes along as AAC-LC (RFC 3640),
+// encoded here from the hub's PCM.
 package rtspserver
 
 import (
@@ -65,7 +65,8 @@ type Config struct {
 	ParamsFile string
 	// ParamsFileH265 does the same for the H.265 VPS/SPS/PPS (sprop-vps,
 	// sprop-sps, sprop-pps), in a file of its own: each codec keeps its
-	// parameter sets across a switch of video.codec.
+	// parameter sets when video.codec is changed (and openqiarad
+	// restarted) back and forth.
 	ParamsFileH265 string
 }
 
@@ -76,10 +77,10 @@ const (
 	audioBitrate = 32000
 )
 
-// Server serves a single video stream over RTSP, H.264 or H.265 as the
-// camera makes it. The camera pipeline runs only while at least one
-// client is reading, mirroring the on-demand behaviour of the HomeKit
-// path so hlcamd isn't kept awake needlessly.
+// Server serves a single video stream over RTSP, in the codec configured
+// (H.264 or H.265), fixed for the server's life. The camera pipeline runs
+// only while at least one client is reading, mirroring the on-demand
+// behaviour of the HomeKit path so hlcamd isn't kept awake needlessly.
 type Server struct {
 	cfg  Config
 	log  *slog.Logger
@@ -87,16 +88,16 @@ type Server struct {
 	rsrv *gortsplib.Server
 
 	// codec is the stream's codec as configured and as seen;
-	// nil: H.264 for good, as before.
+	// nil: H.264, as before.
 	codec *nal.State
+	// served is the codec configured, set at Start and never changed: the
+	// description, forma and the pipeline's packetizer are its. The hub
+	// drops the units of any other codec (nal.State.Admit), so none is
+	// ever packetized as this one.
+	served nal.Codec
 
-	mu     sync.Mutex
-	stream *gortsplib.ServerStream
-	// cur is the codec being served: the description, forma and the
-	// pipeline's packetizer are its. The stream showing another codec
-	// makes the server switch (switchCodec) rather than packetize one
-	// codec's NAL units as the other's.
-	cur      nal.Codec
+	mu       sync.Mutex
+	stream   *gortsplib.ServerStream
 	forma    format.Format      // *format.H264 or *format.H265
 	audio    *format.MPEG4Audio // nil: video only
 	desc     *description.Session
@@ -157,18 +158,19 @@ func New(cfg Config, hub *mediahub.Hub, logger *slog.Logger) *Server {
 // Call before Start. Without it the server is H.264 only.
 func (s *Server) SetCodecState(st *nal.State) { s.codec = st }
 
-// effective is the codec to serve now.
-func (s *Server) effective() nal.Codec {
+// configured is the codec to serve: the setting's, H.264 without a state.
+func (s *Server) configured() nal.Codec {
 	if s.codec == nil {
 		return nal.H264
 	}
-	return s.codec.Effective()
+	return s.codec.Configured()
 }
 
 // proven tells whether the stream has shown its codec on an SPS. Before
 // that, the pipeline waits for a key picture (the SPS comes with it):
-// packetizing slices of a codec the setting may be wrong about would
-// serve an invalid stream for the length of a GOP.
+// slices met before the first SPS are not told apart by their header
+// (nal.Foreign), and packetizing those of a codec the setting may be
+// wrong about would serve an invalid stream for the length of a GOP.
 func (s *Server) proven() bool {
 	return s.codec == nil || s.codec.Detected() != nal.Unknown
 }
@@ -196,38 +198,6 @@ func (s *Server) newVideoFormat(c nal.Codec) format.Format {
 	return f
 }
 
-// switchCodec serves codec c from now on: a new description with its
-// format, the cached parameter sets dropped, and the shared stream closed
-// so that its readers reconnect and read the right description (a reader
-// set up for H.264 cannot be handed H.265 packets). Called at Start, and
-// from the pipeline when the stream shows another codec than the one
-// served (video.codec wrong, or hlcamd relaunched otherwise).
-func (s *Server) switchCodec(c nal.Codec) {
-	s.mu.Lock()
-	if s.cur == c && s.forma != nil {
-		s.mu.Unlock()
-		return
-	}
-	first := s.forma == nil
-	s.cur = c
-	s.vps, s.sps, s.pps = nil, nil, nil
-	s.forma = s.newVideoFormat(c)
-	medias := []*description.Media{{Type: description.MediaTypeVideo, Formats: []format.Format{s.forma}}}
-	if s.audio != nil {
-		medias = append(medias, &description.Media{Type: description.MediaTypeAudio, Formats: []format.Format{s.audio}})
-	}
-	s.desc = &description.Session{Medias: medias}
-	old := s.stream
-	s.stream = nil
-	s.mu.Unlock()
-	if !first {
-		s.log.Warn("rtsp: le flux change de codec : description refaite, lecteurs déconnectés pour qu'ils la relisent", "codec", c.String())
-	}
-	if old != nil {
-		old.Close()
-	}
-}
-
 // Start binds the RTSP listener and begins serving. It returns once the
 // listener is up; serving continues in the background until ctx is
 // cancelled.
@@ -252,10 +222,17 @@ func (s *Server) Start(ctx context.Context) error {
 			}
 		}
 	}
-	// The video format and the description: the codec configured, or the
-	// one the stream already showed (the probe at start).
-	s.switchCodec(s.effective())
-	s.log.Info("rtsp: codec servi", "codec", s.cur.String())
+	// The video format and the description: the codec configured, with
+	// the parameter sets persisted for it, so that DESCRIBE answers
+	// before the pipeline has run.
+	s.served = s.configured()
+	s.forma = s.newVideoFormat(s.served)
+	medias := []*description.Media{{Type: description.MediaTypeVideo, Formats: []format.Format{s.forma}}}
+	if s.audio != nil {
+		medias = append(medias, &description.Media{Type: description.MediaTypeAudio, Formats: []format.Format{s.audio}})
+	}
+	s.desc = &description.Session{Medias: medias}
+	s.log.Info("rtsp: codec servi", "codec", s.served.String())
 
 	s.rsrv = &gortsplib.Server{
 		Handler:     s,
@@ -424,11 +401,8 @@ func (s *Server) startPipeline() {
 // samples to RTP through gortsplib: NAL grouped into access units, PCM
 // encoded to AAC-LC when the stream has audio.
 func (s *Server) runPipeline(ctx context.Context) {
-	s.mu.Lock()
-	codec := s.cur
-	pt := s.forma.PayloadType()
-	s.mu.Unlock()
-	enc, err := newRTPEncoder(codec, pt)
+	codec := s.served
+	enc, err := newRTPEncoder(codec, s.forma.PayloadType())
 	if err != nil {
 		s.log.Error("rtsp: encoder init", "error", err)
 		return
@@ -461,37 +435,7 @@ func (s *Server) runPipeline(ctx context.Context) {
 		if len(au) == 0 {
 			return
 		}
-		// The stream showing another codec than the one packetized makes
-		// the server switch (writeAU); the pipeline then packetizes that
-		// codec itself, from this access unit on. It cannot wait for the
-		// reader count to reach zero: the sessions the switch
-		// closes are still counted until gortsplib runs their close
-		// handler, and a reader reconnecting before that would start no
-		// new pipeline and get nothing from this one.
-		// The unit buffered at that moment is packetized again only if it
-		// belongs to the new codec (it carries that codec's SPS: the key
-		// picture the hub switched on). Switching the other way round, the
-		// hub switches on the SPS of the first H.264 key picture, which is
-		// the sample that flushes the last H.265 unit: that unit belongs to
-		// the old codec and is dropped, never packetized as the new one;
-		// the key picture that follows serves the readers.
-		if s.writeAU(enc, codec, au, auPTS) {
-			next := s.effective()
-			e, err := newRTPEncoder(next, pt)
-			if err != nil {
-				// Never happens (both encoders only need a payload type);
-				// the packetizer and its codec stay as they are.
-				s.log.Error("rtsp: encoder init", "codec", next.String(), "error", err)
-			} else {
-				enc, codec = e, next
-				s.log.Info("rtsp: pipeline repacketizes the stream's codec", "codec", codec.String())
-				if c := auCodec(au); c == codec {
-					s.writeAU(enc, codec, au, auPTS)
-				} else {
-					s.log.Debug("rtsp: access unit of the previous codec dropped at the switch", "unit", c.String(), "now", codec.String())
-				}
-			}
-		}
+		s.writeAU(enc, au, auPTS)
 		au = au[:0]
 	}
 
@@ -522,23 +466,6 @@ func (s *Server) runPipeline(ctx context.Context) {
 	}
 }
 
-// auCodec is the codec an access unit proves by its SPS: H.264 or H.265
-// when it carries one that parses, Unknown otherwise (slices alone do not
-// tell). It decides whether a unit buffered when the pipeline switches
-// codec is of the new codec (the key picture the switch came from) or of
-// the old one.
-func auCodec(au [][]byte) nal.Codec {
-	for _, n := range au {
-		if !nal.MayBeSPS(n) {
-			continue
-		}
-		if c := nal.Detect(n); c != nal.Unknown {
-			return c
-		}
-	}
-	return nal.Unknown
-}
-
 // newRTPEncoder is the packetizer of codec c (RFC 6184 for H.264, RFC 7798
 // for H.265) on payload type pt.
 func newRTPEncoder(c nal.Codec, pt uint8) (rtpEncoder, error) {
@@ -558,15 +485,9 @@ func newRTPEncoder(c nal.Codec, pt uint8) (rtpEncoder, error) {
 
 // writeAU caches parameter sets, prepends them ahead of a key picture for
 // mid-GOP joiners, encodes the access unit to RTP and writes it to all
-// readers. codec is the one the packetizer enc was made for: an access
-// unit of another codec (the stream changed) makes the server switch and
-// is not packetized as the wrong codec; switched is then true and the
-// caller packetizes it again with the right encoder (runPipeline).
-func (s *Server) writeAU(enc rtpEncoder, codec nal.Codec, au [][]byte, pts90khz int64) (switched bool) {
-	if c := s.effective(); c != codec {
-		s.switchCodec(c)
-		return true
-	}
+// readers. The unit is of the codec served: the hub let through no other.
+func (s *Server) writeAU(enc rtpEncoder, au [][]byte, pts90khz int64) {
+	codec := s.served
 	hasKey := false
 	paramsChanged := false
 	cache := func(dst *[]byte, n []byte) {
@@ -595,10 +516,10 @@ func (s *Server) writeAU(enc rtpEncoder, codec nal.Codec, au [][]byte, pts90khz 
 	// The stream has not shown its SPS yet: nothing goes out before the
 	// key picture that brings it (see proven).
 	if !hasKey && !s.proven() {
-		return false
+		return
 	}
 	if !s.keepAU(hasKey) {
-		return false
+		return
 	}
 
 	out := au
@@ -620,23 +541,22 @@ func (s *Server) writeAU(enc rtpEncoder, codec nal.Codec, au [][]byte, pts90khz 
 	pkts, err := enc.Encode(out)
 	if err != nil {
 		s.log.Warn("rtsp: encode error", "error", err)
-		return false
+		return
 	}
 	ts := uint32(int64(s.randomStart) + pts90khz)
 	s.mu.Lock()
-	st, medi := s.stream, s.desc.Medias[0]
+	st := s.stream
 	s.mu.Unlock()
 	if st == nil {
-		return false
+		return
 	}
 	for _, p := range pkts {
 		p.Timestamp = ts
-		if err := st.WritePacketRTP(medi, p); err != nil {
+		if err := st.WritePacketRTP(s.desc.Medias[0], p); err != nil {
 			s.log.Warn("rtsp: write error", "error", err)
-			return false
+			return
 		}
 	}
-	return false
 }
 
 // paramTypeSPS and paramTypePPS are the SPS and PPS types of a codec.
@@ -657,7 +577,10 @@ func paramTypePPS(c nal.Codec) uint8 {
 // publishParams advertises the cached parameter sets in the session
 // description served to future DESCRIBE requests, and persists them for
 // the next start. The slices are fresh copies (see writeAU), never mutated
-// afterwards, so sharing them with the format and its clones is safe.
+// afterwards, so sharing them with the format and its clones is safe. The
+// format's fields are read and set under s.mu: ensureStream clones the
+// format (gortsplib reads the fields by reflection) while holding it (axe
+// F, 28/10/2026); ReloadDesc then hands the new fields to the stream.
 func (s *Server) publishParams() {
 	s.mu.Lock()
 	vps, sps, pps, st, forma := s.vps, s.sps, s.pps, s.stream, s.forma
@@ -667,15 +590,15 @@ func (s *Server) publishParams() {
 	}
 	switch f := forma.(type) {
 	case *format.H264:
-		cs, cp := f.SafeParams()
-		if bytes.Equal(cs, sps) && bytes.Equal(cp, pps) {
+		s.mu.Lock()
+		same := bytes.Equal(f.SPS, sps) && bytes.Equal(f.PPS, pps)
+		if !same {
+			f.SPS, f.PPS = sps, pps
+		}
+		s.mu.Unlock()
+		if same {
 			return
 		}
-		// Under s.mu: ensureStream clones the format (gortsplib reads the
-		// fields by reflection) while holding it (axe F, 28/10/2026).
-		s.mu.Lock()
-		f.SafeSetParams(sps, pps)
-		s.mu.Unlock()
 		if st != nil {
 			st.ReloadDesc()
 		}
@@ -687,13 +610,15 @@ func (s *Server) publishParams() {
 		if len(vps) == 0 {
 			return
 		}
-		cv, cs, cp := f.SafeParams()
-		if bytes.Equal(cv, vps) && bytes.Equal(cs, sps) && bytes.Equal(cp, pps) {
+		s.mu.Lock()
+		same := bytes.Equal(f.VPS, vps) && bytes.Equal(f.SPS, sps) && bytes.Equal(f.PPS, pps)
+		if !same {
+			f.VPS, f.SPS, f.PPS = vps, sps, pps
+		}
+		s.mu.Unlock()
+		if same {
 			return
 		}
-		s.mu.Lock()
-		f.SafeSetParams(vps, sps, pps)
-		s.mu.Unlock()
 		if st != nil {
 			st.ReloadDesc()
 		}
@@ -837,18 +762,14 @@ func (s *Server) writeAudio(a *audioEncoder, sample camera.Sample) {
 		}
 		s.mu.Lock()
 		st := s.stream
-		var medi *description.Media
-		if len(s.desc.Medias) > 1 {
-			medi = s.desc.Medias[1]
-		}
 		s.mu.Unlock()
-		if st == nil || medi == nil {
+		if st == nil {
 			return
 		}
 		ts := uint32(int64(s.randomStart) + pts*audioRate/90000)
 		for _, p := range pkts {
 			p.Timestamp = ts
-			if err := st.WritePacketRTP(medi, p); err != nil {
+			if err := st.WritePacketRTP(s.desc.Medias[1], p); err != nil {
 				s.log.Warn("rtsp: audio write error", "error", err)
 				return
 			}

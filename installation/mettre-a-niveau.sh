@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# mettre-a-niveau.sh : passe une camera Qiara qui fait deja tourner OpenQiara a OpenQIARA Claude V15 et QIARA Plus v10,
+# mettre-a-niveau.sh : passe une camera Qiara qui fait deja tourner OpenQiara a OpenQIARA Claude V16 et QIARA Plus v10,
 # par SSH, sans demonter la carte. Les capteurs appaires, la configuration MQTT et les reglages restent.
 #   ./mettre-a-niveau.sh [--configuration configuration.txt] [--camera 192.168.1.50] [--oui] [--essai]
 # Prerequis : la cle SSH de CLE_SSH_PUBLIQUE autorisee sur la camera (sa cle privee a cote, meme nom sans .pub).
@@ -7,8 +7,8 @@
 #   1. controles en lecture seule (processeur, OpenQiara en marche lance par boot.sh, place sur /data et /media) ;
 #   2. sauvegarde sur l'ordinateur de /data/openqiara.json, boot.sh et post_boot.sh (./sauvegarde-camera-<date>/) ;
 #   3. depot du paquet dans /media/oqc, empreintes verifiees sur la camera ;
-#   4. boot.sh remplace par celui de la distribution (copie .avant-v15 gardee), bloc ajoute a post_boot.sh ;
-#   5. installer.sh lance sur la camera : V15, QIARA Plus, services du cloud, redemarrage, verification ;
+#   4. boot.sh remplace par celui de la distribution (copie .avant-v16 gardee), bloc ajoute a post_boot.sh ;
+#   5. installer.sh lance sur la camera : V16, QIARA Plus, services du cloud, redemarrage, verification ;
 #   6. suivi jusqu'au rapport final.
 set -euo pipefail
 ICI="$(cd "$(dirname "$0")" && pwd)"
@@ -25,7 +25,7 @@ while [ $# -gt 0 ]; do
     *) err "option inconnue : $1";;
   esac
 done
-msg "=== OpenQIARA Claude V15 : mise a niveau par SSH ==="
+msg "=== OpenQIARA Claude V16 : mise a niveau par SSH ==="
 cfg_charger "$CONF"; cfg_verifier ssh
 [ -n "$CAM" ] || CAM=$(cfg CAMERA_ADRESSE "")
 [ -n "$CAM" ] || err "CAMERA_ADRESSE est vide (ou --camera <adresse>)"
@@ -90,34 +90,35 @@ ok "sauvegarde : $SAUV (openqiara.json contient le mot de passe MQTT : a garder 
 # ---------------------------------------------------------------- 3. paquet dans /media/oqc
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 fichier_defauts "$TMP/openqiara-defauts.json"; fichier_installation "$TMP/installation.conf"
-for f in openqiarad-claude-v15 openqiarad-claude-v15-compact; do printf '%s  %s\n' "$(sha256_de "$PAQUET/$f")" "$f" > "$TMP/$f.sha256"; done
+for f in openqiarad-claude-v16 openqiarad-claude-v16-compact; do printf '%s  %s\n' "$(sha256_de "$PAQUET/$f")" "$f" > "$TMP/$f.sha256"; done
 cam 'mkdir -p /media/oqc/sauvegarde'
-for f in openqiarad-claude-v15 openqiarad-claude-v15-compact qp-setup.sh installer.sh services-cloud.sh reglage.sh boot.sh; do envoyer "$PAQUET/$f" "/media/oqc/$f"; done
-for f in openqiarad-claude-v15.sha256 openqiarad-claude-v15-compact.sha256 openqiara-defauts.json installation.conf; do envoyer "$TMP/$f" "/media/oqc/$f"; done
-for f in openqiarad-claude-v15 openqiarad-claude-v15-compact qp-setup.sh installer.sh services-cloud.sh reglage.sh boot.sh; do
+for f in openqiarad-claude-v16 openqiarad-claude-v16-compact qp-setup.sh installer.sh services-cloud.sh reglage.sh boot.sh; do envoyer "$PAQUET/$f" "/media/oqc/$f"; done
+for f in openqiarad-claude-v16.sha256 openqiarad-claude-v16-compact.sha256 openqiara-defauts.json installation.conf; do envoyer "$TMP/$f" "/media/oqc/$f"; done
+for f in openqiarad-claude-v16 openqiarad-claude-v16-compact qp-setup.sh installer.sh services-cloud.sh reglage.sh boot.sh; do
   [ "$(cam "sha256sum /media/oqc/$f" | cut -d' ' -f1)" = "$(sha256_de "$PAQUET/$f")" ] || err "/media/oqc/$f abime pendant l'envoi : relancer"
 done
-cam 'chmod 755 /media/oqc/*.sh /media/oqc/openqiarad-claude-v15 /media/oqc/openqiarad-claude-v15-compact'
+cam 'chmod 755 /media/oqc/*.sh /media/oqc/openqiarad-claude-v16 /media/oqc/openqiarad-claude-v16-compact'
 ok "paquet depose dans /media/oqc, empreintes verifiees sur la camera"
 
 # ---------------------------------------------------------------- 4. boot.sh et post_boot.sh
 bloc_post_boot > "$TMP/post_boot-bloc.txt"; envoyer "$TMP/post_boot-bloc.txt" /media/oqc/post_boot-bloc.txt
 cam 'set -e
   if ! cmp -s /media/oqc/boot.sh /data/boot.sh; then
-    [ -e /data/boot.sh.avant-v15 ] || cp -p /data/boot.sh /data/boot.sh.avant-v15
+    [ -e /data/boot.sh.avant-v16 ] || cp -p /data/boot.sh /data/boot.sh.avant-v16
     cp /media/oqc/boot.sh /data/boot.sh.oqc.tmp && chmod 755 /data/boot.sh.oqc.tmp && sync && mv -f /data/boot.sh.oqc.tmp /data/boot.sh && sync
-    echo "boot.sh remplace (copie /data/boot.sh.avant-v15)"
+    echo "boot.sh remplace (copie /data/boot.sh.avant-v16)"
   fi
   [ -f /data/post_boot.sh ] || echo "# /data/post_boot.sh : reglages locaux, execute par boot.sh a la fin du demarrage." > /data/post_boot.sh
-  if ! grep -qF "$(head -n 1 /media/oqc/post_boot-bloc.txt)" /data/post_boot.sh; then
-    cp -p /data/post_boot.sh /data/post_boot.sh.avant-v15
+  # un bloc d une version precedente (« openqiara-claude-v15 ») fait la meme chose : il est garde tel quel
+  if ! grep -q ">>> openqiara-claude" /data/post_boot.sh; then
+    cp -p /data/post_boot.sh /data/post_boot.sh.avant-v16
     # bloc place en tete (apres une eventuelle ligne #!) : un « exit » plus bas dans le fichier ne l empeche pas de s executer
     { if head -n 1 /data/post_boot.sh | grep -q "^#!"; then head -n 1 /data/post_boot.sh; cat /media/oqc/post_boot-bloc.txt; echo; tail -n +2 /data/post_boot.sh
       else cat /media/oqc/post_boot-bloc.txt; echo; cat /data/post_boot.sh; fi; } > /data/post_boot.sh.oqc.tmp
     if ! sh -n /data/post_boot.sh.oqc.tmp; then rm -f /data/post_boot.sh.oqc.tmp; echo "ECHEC post_boot.sh modifie invalide"; exit 3; fi
     mv -f /data/post_boot.sh.oqc.tmp /data/post_boot.sh && sync
-    echo "bloc place en tete de post_boot.sh (copie /data/post_boot.sh.avant-v15)"
-  fi' | sed 's/^/  ok    /' || err "modification de boot.sh ou de post_boot.sh en echec (voir ci-dessus) : installation non lancee (copies .avant-v15 sur la camera, sauvegarde : $SAUV)"
+    echo "bloc place en tete de post_boot.sh (copie /data/post_boot.sh.avant-v16)"
+  fi' | sed 's/^/  ok    /' || err "modification de boot.sh ou de post_boot.sh en echec (voir ci-dessus) : installation non lancee (copies .avant-v16 sur la camera, sauvegarde : $SAUV)"
 
 # ---------------------------------------------------------------- 5. installation sur la camera
 cam ': > /media/oqc/A-INSTALLER; rm -f /media/oqc/A-VERIFIER /media/oqc/rapport.txt /media/oqc/etat; sync; ( setsid nohup sh /media/oqc/installer.sh auto >/dev/null 2>&1 < /dev/null & )'

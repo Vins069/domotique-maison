@@ -79,8 +79,9 @@ var diagFields = []diagField{
 	{Key: "video_shim_on", Name: "Réglage d'encodage (profil High)", Domain: "binary_sensor", Category: "diagnostic", Icon: "mdi:video-high-definition"},
 	// Qiara Plus v8: the codec option hlcamd runs with, read on its command line by the guard.
 	{Key: "video_codec_hlcamd", Name: "Codec vidéo demandé à hlcamd", Domain: "sensor", DeviceClass: "enum", Options: []string{"H.264", "H.265", "defaut"}, Category: "diagnostic", Icon: "mdi:video-input-component"},
-	// the codec the camera's stream is served in (what RTSP and HLS carry), the one
-	// video.codec asks hlcamd for, and whether the two differ (the stream is served as it is).
+	// the codec the camera's stream shows on its SPS, the one video.codec asks hlcamd
+	// for (the one RTSP, HLS and HomeKit serve), and whether the two differ (the stream is then
+	// not served: changing the codec means restarting openqiarad).
 	{Key: "video_codec", Name: "Codec vidéo", Domain: "sensor", DeviceClass: "enum", Options: videoCodecOptions, Category: "diagnostic", Icon: "mdi:video"},
 	{Key: "video_codec_configured", Name: "Codec vidéo configuré", Domain: "sensor", DeviceClass: "enum", Options: videoCodecOptions, Category: "diagnostic", Icon: "mdi:video-outline"},
 	{Key: "video_codec_mismatch", Name: "Codec vidéo différent du réglage", Domain: "binary_sensor", DeviceClass: "problem", Category: "diagnostic"},
@@ -171,8 +172,8 @@ func (p *HAPublisher) onlineDiscovery() (string, discoveryPayload) {
 }
 
 // lastSeenTopic carries a sensor's "last heard" time, retained.
-// The time lives in memory only: read from the diagnostics document, as up to
-// Before, it went back to unknown at every restart until the sensor next
+// The time lives in memory only. Read from the diagnostics document, as
+// before, it went back to unknown at every restart until the sensor next
 // spoke (the motion detector: until someone walks past). Retained by the
 // broker on a topic of its own and published only once known, it keeps its
 // last value across restarts of the camera and of Home Assistant.

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Flux synthetiques des tests H.264 et H.265 (claude13) : mire ffmpeg de 3 s a 30 i/s en 160x90, une image cle toutes les
+# Flux synthetiques des tests H.264 et H.265 : mire ffmpeg de 3 s a 30 i/s en 160x90, une image cle toutes les
 # 30 images, sans images B (GOP ferme, ordre de decodage = ordre d affichage, comme un encodeur de camera), delimiteurs d'unite d'acces inseres (le faux hlcamd s'en sert pour couper les images, puis les retire), en Annex B.
 # Encodes en base64 (texte) : aucun binaire n'est commite. Les empreintes des flux decodes sont dans SHA256SUMS.
 # Reproduction : sh gen.sh (ffmpeg 6.1 avec libx264 et libx265 ; un autre ffmpeg peut produire d'autres octets, les tests

@@ -1,7 +1,7 @@
-﻿# Simulateur-Windows.ps1 : simulateur des scripts Windows de la distribution OpenQIARA Claude V15
+﻿# Simulateur-Windows.ps1 : simulateur des scripts Windows de la distribution OpenQIARA Claude V16
 # (Preparer-carte-SD.ps1 et Mettre-a-niveau.ps1), sur un PC Windows SANS WSL, sans usbipd-win, sans lecteur de carte.
 #
-# Principe : le paquet livre (OpenQIARA-Claude-V15.zip) est decompresse comme le ferait l'utilisateur ; les deux vrais
+# Principe : le paquet livre (OpenQIARA-Claude-V16.zip) est decompresse comme le ferait l'utilisateur ; les deux vrais
 # scripts sont lances par Windows PowerShell 5.1, chacun dans un processus neuf, sur une suite de scenarios. Ils trouvent
 # en tete du PATH un faux wsl.exe et un faux usbipd.exe (FauxOutils.cs, compiles ici, sans installation) qui repondent
 # comme les vrais et notent chaque appel. Le simulateur verifie ensuite, scenario par scenario : messages, code de
@@ -12,9 +12,9 @@
 # Usage : powershell -ExecutionPolicy Bypass -File Simulateur-Windows.ps1 [-Paquet <zip>] [-Travail <dossier>]
 # Resultat : <Travail>\rapport.txt (et captures par scenario : appels, configuration et commande transmises a WSL).
 param(
-  # par defaut : le zip a cote du dossier du simulateur, sinon celui du depot (paquet\OpenQIARA-Claude-V15.zip)
-  [string]$Paquet = $(foreach ($c in (Join-Path (Split-Path $PSScriptRoot -Parent) 'OpenQIARA-Claude-V15.zip'),
-                                     (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'paquet\OpenQIARA-Claude-V15.zip')) {
+  # par defaut : le zip a cote du dossier du simulateur, sinon celui du depot (paquet\OpenQIARA-Claude-V16.zip)
+  [string]$Paquet = $(foreach ($c in (Join-Path (Split-Path $PSScriptRoot -Parent) 'OpenQIARA-Claude-V16.zip'),
+                                     (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'paquet\OpenQIARA-Claude-V16.zip')) {
                         if (Test-Path -LiteralPath $c) { $c; break } }),
   [string]$Travail = (Join-Path $PSScriptRoot ('travail-' + (Get-Date -Format 'yyyyMMdd-HHmmss')))
 )
@@ -23,7 +23,7 @@ $utf8 = New-Object Text.UTF8Encoding($false)
 $rapport = New-Object System.Collections.Generic.List[string]
 function Ecrire($t) { $rapport.Add($t); Write-Output $t }   # (pas « R » : alias de Invoke-History)
 
-Ecrire "Simulateur Windows OpenQIARA Claude V15 - $(Get-Date -Format s) - PowerShell $($PSVersionTable.PSVersion) - $([Environment]::OSVersion.VersionString)"
+Ecrire "Simulateur Windows OpenQIARA Claude V16 - $(Get-Date -Format s) - PowerShell $($PSVersionTable.PSVersion) - $([Environment]::OSVersion.VersionString)"
 if (-not $Paquet -or -not (Test-Path -LiteralPath $Paquet)) { throw "paquet introuvable (indiquer -Paquet <zip>) : $Paquet" }
 Ecrire "paquet : $Paquet (sha256 $((Get-FileHash -LiteralPath $Paquet -Algorithm SHA256).Hash.Substring(0, 16).ToLower()))"
 New-Item -ItemType Directory -Force -Path $Travail | Out-Null
@@ -41,13 +41,13 @@ Ecrire "faux outils compiles : $faux (wsl.exe, usbipd.exe)"
 function Deballer($dest) {
   New-Item -ItemType Directory -Force -Path $dest | Out-Null
   Expand-Archive -LiteralPath $Paquet -DestinationPath $dest -Force
-  return (Join-Path $dest 'OpenQIARA-Claude-V15')
+  return (Join-Path $dest 'OpenQIARA-Claude-V16')
 }
 $pkg = Deballer (Join-Path $Travail 'paquet')
 $pkgAccent = Deballer (Join-Path $Travail "Téléchargements\Dossier d'été (copie)")
 function Profil($dossier, [switch]$SansPrivee) {
   New-Item -ItemType Directory -Force -Path (Join-Path $dossier '.ssh') | Out-Null
-  [IO.File]::WriteAllText((Join-Path $dossier '.ssh\id_ed25519.pub'), "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAISIMULATEURWINDOWSOPENQIARAV15xxxxxxxxxx simulateur@windows`n", $utf8)
+  [IO.File]::WriteAllText((Join-Path $dossier '.ssh\id_ed25519.pub'), "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAISIMULATEURWINDOWSOPENQIARAV16xxxxxxxxxx simulateur@windows`n", $utf8)
   if (-not $SansPrivee) { [IO.File]::WriteAllText((Join-Path $dossier '.ssh\id_ed25519'), "-----BEGIN OPENSSH PRIVATE KEY-----`nfausse cle du simulateur`n-----END OPENSSH PRIVATE KEY-----`n", $utf8) }
   return $dossier
 }

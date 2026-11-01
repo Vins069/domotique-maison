@@ -1,4 +1,4 @@
-﻿# Mettre-a-niveau.ps1 : depuis Windows, passe une camera Qiara qui fait deja tourner OpenQiara a OpenQIARA Claude V15
+﻿# Mettre-a-niveau.ps1 : depuis Windows, passe une camera Qiara qui fait deja tourner OpenQiara a OpenQIARA Claude V16
 # et QIARA Plus v10, par SSH. Lance mettre-a-niveau.sh dans WSL (le meme outil que sous Linux et macOS).
 # Prerequis : WSL avec une distribution (wsl --install), la cle SSH de CLE_SSH_PUBLIQUE autorisee sur la camera.
 # La cle privee (meme nom sans .pub) est copiee le temps de l'operation dans WSL, avec les droits qu'exige ssh,

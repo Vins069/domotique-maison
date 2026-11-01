@@ -1,0 +1,194 @@
+# OpenQIARA Claude V16 / QIARA Plus v10 : alertes de la camera Qiara dans Home Assistant.
+#
+# Installation :
+#   1. dans configuration.yaml, une seule fois :   homeassistant:
+#                                                     packages: !include_dir_named packages
+#   2. copier ce fichier dans /config/packages/ ;
+#   3. Outils de developpement > YAML > Verifier la configuration, puis redemarrer Home Assistant.
+#
+# Les entites de la camera sont creees par la decouverte MQTT, sans rien copier. Les identifiants ci-dessous sont ceux
+# que Home Assistant donne par defaut a l'appareil « OpenQiara Caméra ». Si vous avez renomme l'appareil, remplacez le
+# debut « openqiara_camera_ » par le votre (Parametres > Appareils et services > MQTT > OpenQiara Caméra).
+# Les alertes sont des notifications de Home Assistant (cloche). Pour les recevoir sur un telephone, ajouter sous
+# chaque « action » un appel a notify.mobile_app_<votre_telephone>.
+
+automation:
+  - id: openqiara_camera_hors_ligne
+    alias: "Caméra Qiara : hors ligne depuis 5 minutes"
+    description: "OpenQiara ne répond plus sur MQTT (Wi-Fi, alimentation, démarrage en cours)."
+    mode: single
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.openqiara_camera_en_ligne
+        to: "off"
+        for: "00:05:00"
+      - trigger: state
+        entity_id: binary_sensor.openqiara_camera_en_ligne
+        to: "unavailable"
+        for: "00:05:00"
+    actions:
+      - action: persistent_notification.create
+        data:
+          notification_id: openqiara_hors_ligne
+          title: "Caméra Qiara hors ligne"
+          message: >-
+            La caméra ne répond plus depuis 5 minutes ({{ now().strftime('%d/%m %H:%M') }}).
+            QIARA Plus relance le Wi-Fi puis la caméra d'elle-même si sa box ne répond plus.
+
+  - id: openqiara_camera_de_retour
+    alias: "Caméra Qiara : de nouveau en ligne"
+    mode: single
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.openqiara_camera_en_ligne
+        from: "off"
+        to: "on"
+    actions:
+      - action: persistent_notification.dismiss
+        data:
+          notification_id: openqiara_hors_ligne
+
+  - id: openqiara_codec_different
+    alias: "Caméra Qiara : codec vidéo différent du réglage"
+    description: "hlcamd encode dans un autre codec que celui de la configuration : depuis la V16, le flux n'est plus servi tant que le désaccord dure (ni RTSP, ni HLS, ni HomeKit)."
+    mode: single
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.openqiara_camera_codec_video_different_du_reglage
+        to: "on"
+        for: "00:02:00"
+    actions:
+      - action: persistent_notification.create
+        data:
+          notification_id: openqiara_codec
+          title: "Caméra Qiara : aucune image servie (codec)"
+          message: >-
+            Le flux est en {{ states('sensor.openqiara_camera_codec_video') }} alors que la configuration demande
+            {{ states('sensor.openqiara_camera_codec_video_configure') }} depuis plus de 2 minutes : OpenQiara ne sert
+            aucune image tant que le désaccord dure. Remède : mettre le réglage et hlcamd en accord (reglage.sh codec …,
+            ou redémarrer la caméra), puis relancer OpenQiara.
+
+  - id: openqiara_codec_retabli
+    alias: "Caméra Qiara : codec vidéo de nouveau conforme"
+    mode: single
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.openqiara_camera_codec_video_different_du_reglage
+        from: "on"
+        to: "off"
+    actions:
+      - action: persistent_notification.dismiss
+        data:
+          notification_id: openqiara_codec
+
+  # Fin de mouvement perdue au redemarrage de la camera. Le detecteur de mouvement envoie par radio « debut » puis,
+  # quand le mouvement cesse, « fin de mouvement ». Si la fin arrive pendant un arret d'OpenQiara (mise a jour, relance,
+  # redemarrage), elle est perdue : la camera ne connait plus l'etat et ne publie rien, et l'entite reste « detecte »
+  # jusqu'au mouvement suivant. Ici : quand la camera revient en ligne (entite « En ligne » de off ou indisponible a on),
+  # on attend 60 s ; un detecteur de mouvement encore « detecte », dont l'entite n'a pas change depuis ce retour, est
+  # republie avec motion=false, retenu, sur son sujet d'etat (la camera reprend la main a sa prochaine publication).
+  # Sans effet en marche normale. Seul cas ou l'entite peut passer a « aucun mouvement » un peu tot : une simple
+  # reconnexion MQTT (sans redemarrage) pendant un mouvement qui dure plus d'une minute.
+  # Si votre prefixe MQTT n'est pas « openqiara » (configuration.txt, MQTT_PREFIXE), remplacez-le dans le sujet publie.
+  # Sur Home Assistant recent, l'identifiant d'un detecteur est de la forme binary_sensor.openqiara_pir_<n>_openqiara_pir_<n>
+  # (le nom de l'entite reprend celui de l'appareil) ; sur un plus ancien, binary_sensor.openqiara_pir_<n>. Les deux sont acceptes.
+  - id: openqiara_mouvement_fin_perdue
+    alias: "Caméra Qiara : détecteur de mouvement remis à zéro après un redémarrage"
+    description: "Quand la caméra redémarre pendant une détection, la fin de mouvement est perdue ; 60 s après le retour en ligne de la caméra, un détecteur encore « détecté » et inchangé depuis est remis à « aucun mouvement »."
+    mode: restart
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.openqiara_camera_en_ligne
+        to: "on"
+    conditions:
+      - condition: template
+        value_template: "{{ trigger.from_state is not none and trigger.from_state.state != 'on' }}"
+    actions:
+      - delay: "00:01:00"
+      - repeat:
+          for_each: >-
+            {{ states.binary_sensor
+               | selectattr('entity_id', 'search', '^binary_sensor\.openqiara_pir_[0-9]+(_openqiara_pir_[0-9]+)?$')
+               | selectattr('attributes.device_class', 'eq', 'motion')
+               | selectattr('state', 'eq', 'on')
+               | map(attribute='entity_id') | list }}
+          sequence:
+            # l'entite n'a pas change depuis le retour en ligne, et porte bien les attributs d'un detecteur
+            - condition: template
+              value_template: >-
+                {{ states[repeat.item].last_changed < trigger.to_state.last_changed
+                   and state_attr(repeat.item, 'battery') is number }}
+            - action: mqtt.publish
+              data:
+                topic: "openqiara/sensor/{{ repeat.item | regex_findall('openqiara_pir_([0-9]+)') | first }}/state"
+                retain: true
+                payload: >-
+                  {{ {'motion': false,
+                      'battery': state_attr(repeat.item, 'battery'),
+                      'reachable': state_attr(repeat.item, 'reachable') | bool(true)} | to_json }}
+            - action: logbook.log
+              data:
+                name: Caméra Qiara
+                entity_id: "{{ repeat.item }}"
+                message: "fin de mouvement perdue au redémarrage de la caméra : remis à « aucun mouvement » par Home Assistant"
+
+  - id: openqiara_redemarrage_automatique
+    alias: "Caméra Qiara : redémarrage par QIARA Plus"
+    description: "Le surveillant a redémarré la caméra (réseau muet, vidéo absente, ordre)."
+    mode: queued
+    triggers:
+      - trigger: state
+        entity_id: sensor.openqiara_camera_dernier_redemarrage_automatique
+        to: null   # changements d'etat seulement (pas ceux des attributs)
+    conditions:
+      # les redemarrages prevus (fin d'installation, reglage.sh) ne sont pas signales
+      - condition: template
+        value_template: >-
+          {{ trigger.from_state is not none and trigger.from_state.state not in ['unknown', 'unavailable', '']
+             and trigger.to_state.state not in ['unknown', 'unavailable', '', 'aucun']
+             and "fin d'installation" not in trigger.to_state.state
+             and "changement de reglage" not in trigger.to_state.state }}
+    actions:
+      - action: persistent_notification.create
+        data:
+          title: "Caméra Qiara redémarrée"
+          message: "Raison donnée par QIARA Plus : {{ trigger.to_state.state }}"
+
+  - id: openqiara_essai_trop_long
+    alias: "Caméra Qiara : mise à jour en essai depuis 1 heure"
+    description: "Une version en essai n'est ni validée ni annulée (liaison MQTT absente pendant l'essai ?)."
+    mode: single
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.openqiara_camera_mise_a_jour_en_essai
+        to: "on"
+        for: "01:00:00"
+    actions:
+      - action: persistent_notification.create
+        data:
+          notification_id: openqiara_essai
+          title: "Caméra Qiara : mise à jour en essai"
+          message: >-
+            Une version d'OpenQiara est en essai depuis une heure ({{ states('sensor.openqiara_camera_derniere_mise_a_jour') }}).
+            Elle est validée après 3 minutes de bonne santé avec MQTT connecté ; sinon, bouton « Annuler la mise à jour en essai ».
+
+  - id: openqiara_place
+    alias: "Caméra Qiara : carte SD presque pleine"
+    mode: single
+    triggers:
+      - trigger: numeric_state
+        entity_id: sensor.openqiara_camera_donnees_occupees
+        above: 90
+        for: "00:30:00"
+      - trigger: numeric_state
+        entity_id: sensor.openqiara_camera_carte_sd_occupee
+        above: 90
+        for: "00:30:00"
+    actions:
+      - action: persistent_notification.create
+        data:
+          notification_id: openqiara_place
+          title: "Caméra Qiara : place"
+          message: >-
+            /data occupée à {{ states('sensor.openqiara_camera_donnees_occupees') }} %,
+            carte SD (/media) à {{ states('sensor.openqiara_camera_carte_sd_occupee') }} %.

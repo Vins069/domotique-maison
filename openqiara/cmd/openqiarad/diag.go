@@ -21,8 +21,9 @@ const diagPeriod = time.Minute
 // health: Wi-Fi link, memory, storage, temperature, air quality, and when
 // each sensor was last heard. It rides on the MQTT connection and stops with
 // ctx; a minute with no connection is skipped, the next one tells all. The
-// video codec goes with it: configured, served, and whether the
-// two differ; kick asks for a reading now (the codec just changed).
+// video codec goes with it: the stream's, the configured one
+// (the one served), and whether the two differ; kick asks for a reading
+// now (the stream's codec just changed).
 func serveDiagnostics(ctx context.Context, pub *publisher.MQTTPublisher, cam camera.Client, version string,
 	codec *nal.State, hub *mediahub.Hub, kick <-chan struct{}, logger *slog.Logger) {
 	probe := sonde.New()
@@ -72,15 +73,22 @@ func serveDiagnostics(ctx context.Context, pub *publisher.MQTTPublisher, cam cam
 }
 
 // codecDiag is the video codec's part of the diagnostic reading: the codec
-// served (video_codec, what RTSP and HLS carry), the one configured, and a
-// problem flag when the stream contradicts the setting; the NAL counts
-// since the start as an attribute map (no entity of its own).
+// the stream showed on its last SPS (video_codec; the configured one
+// before any), the one configured (video_codec_configured, what RTSP, HLS
+// and HomeKit serve), and a problem flag when the stream contradicts the
+// setting (it is then not served); the NAL counts since the start, units
+// dropped for their codec included, as an attribute map (no entity of its
+// own).
 func codecDiag(codec *nal.State, hub *mediahub.Hub) map[string]any {
 	if codec == nil {
 		return nil
 	}
+	stream := codec.Detected()
+	if stream == nal.Unknown {
+		stream = codec.Configured()
+	}
 	r := map[string]any{
-		"video_codec":            codec.Effective().String(),
+		"video_codec":            stream.String(),
 		"video_codec_configured": codec.Configured().String(),
 		"video_codec_mismatch":   "OFF",
 	}

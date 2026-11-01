@@ -79,7 +79,7 @@ func TestAirAndBoardFields(t *testing.T) {
 	// the vendor's index is not the ENS160's AQI-UBA but its eCO2 scale; "UBA" left the name
 	// (the entity keeps its unique_id, hence its entity_id in Home Assistant)
 	if byKey["air_aqi"].DeviceClass != "aqi" || strings.Contains(byKey["air_aqi"].Name, "UBA") {
-		t.Errorf("air_aqi: aqi class , no UBA in the name: %+v", byKey["air_aqi"])
+		t.Errorf("air_aqi: aqi class, no UBA in the name: %+v", byKey["air_aqi"])
 	}
 	for _, k := range []string{"board_temp_c", "board_humidity_pct"} {
 		if byKey[k].Category != "diagnostic" {
@@ -89,11 +89,11 @@ func TestAirAndBoardFields(t *testing.T) {
 }
 
 func TestCameraDeviceInfo(t *testing.T) {
-	SetCameraInfo("v0.1.0-rc.22-claude5", "http://192.0.2.67/")
+	SetCameraInfo("v0.1.0-rc.23-claude-v16", "http://192.0.2.67/")
 	defer SetCameraInfo("", "")
 	d := cameraDevice()
 	data, _ := json.Marshal(d)
-	if !strings.Contains(string(data), `"sw_version":"v0.1.0-rc.22-claude5"`) || !strings.Contains(string(data), `"configuration_url":"http://192.0.2.67/"`) {
+	if !strings.Contains(string(data), `"sw_version":"v0.1.0-rc.23-claude-v16"`) || !strings.Contains(string(data), `"configuration_url":"http://192.0.2.67/"`) {
 		t.Fatalf("device = %s", data)
 	}
 	SetCameraInfo("", "")

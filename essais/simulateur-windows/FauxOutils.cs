@@ -1,4 +1,4 @@
-// FauxOutils.cs : faux wsl.exe et faux usbipd.exe du simulateur Windows d'OpenQIARA Claude V15.
+// FauxOutils.cs : faux wsl.exe et faux usbipd.exe du simulateur Windows d'OpenQIARA Claude V16.
 // Un seul programme, compile deux fois sous deux noms (Add-Type -OutputType ConsoleApplication, C# 5 :
 // le compilateur de .NET Framework 4 livre avec Windows). Il imite les reponses et les messages d'erreur des vrais
 // outils, tient leur etat dans un fichier, et journalise chaque appel (arguments, dossier courant) pour verification.

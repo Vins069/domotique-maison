@@ -185,6 +185,10 @@ natifs). OpenQiara lit ce fichier chaque minute et expose, sur l'appareil
 | Contraste (jour) | `number` | `openqiara/video/day_contrast/set` | `config.sensor.day.contrast` | 0 à 100, défaut 50 |
 | Saturation (jour) | `number` | `openqiara/video/day_saturation/set` | `config.sensor.day.saturation` | 0 à 100, défaut 75 |
 | Clarté (jour) | `number` | `openqiara/video/day_lightness/set` | `config.sensor.day.lightness` | 0 à 100, défaut 55 |
+| Adaptation à la lumière ambiante (jour) | `select` | `openqiara/video/day_dynamic_light/set` | `config.sensor.day.dynamic.light.management` | Activée (1, défaut), Désactivée (0) |
+| Pièce sombre (vision de nuit plus tôt) | `select` | `openqiara/video/dark_room_hint/set` | `config.sensor.dark-room.hint` | Activée (1, défaut), Désactivée (0) |
+| Rotation de l'image | `select` | `openqiara/video/image_rotation/set` | `config.video.rotation.mode` | Normale (0), Variante 1, Retournée (2), Variante 3 ; hors des restaurations |
+| Vision de nuit | `select` | `openqiara/night_vision/set` | `config.sensor.night_day_mode` (par le volet) | Automatique, Forcée, Coupée ; souhait appliqué volet ouvert |
 | Restaurer les réglages de nuit par défaut | `button` | `openqiara/video/cmd` (`restore-night`) | les quatre réglages de nuit | — |
 | Restaurer les réglages de jour par défaut | `button` | `openqiara/video/cmd` (`restore-day`) | les quatre réglages de jour | — |
 | Restaurer tous les réglages d'image par défaut | `button` | `openqiara/video/cmd` (`restore-defaults`) | tous | — |
@@ -220,14 +224,14 @@ Règles d'écriture :
   le journal le dit ;
 - les écritures sont verrouillées quand la configuration ne dit rien : les entités
   restent, en lecture seule de fait ; `"video": {"lock": false}` dans
-  `openqiara.json` les autorise. La distribution OpenQIARA Claude V15 les déverrouille
+  `openqiara.json` les autorise. La distribution OpenQIARA Claude les déverrouille
   à l'installation (réglage `REGLAGES_IMAGE` de l'outil d'installation), et
   `reglage.sh reglages-image verrouilles|deverrouilles` les change ensuite ;
 - sans `/data/hlcamd-parameters.json` (machine de développement), aucune de
   ces entités n'est publiée et celles d'une version antérieure sont retirées.
 
-Le mode jour/nuit (`config.sensor.night_day_mode`) n'est pas exposé
- : le volet de vie privée le pilote déjà (jour forcé volet fermé,
+Le mode jour/nuit (`config.sensor.night_day_mode`) n'est pas exposé :
+le volet de vie privée le pilote déjà (jour forcé volet fermé,
 pour que le relais du filtre infrarouge ne claque pas toute la nuit derrière
 le volet ; auto volet ouvert). L'exposer aurait permis à « Restaurer les
 réglages de nuit » de remettre le mode auto volet fermé, et l'indicateur
@@ -246,24 +250,27 @@ de la vidéo, ce qui précède les coupures SSH observées sur la caméra).
 
 ### Codec vidéo
 
-Sur `openqiara/diag/state`, trois champs disent le codec de la vidéo, lu sur
-le SPS du flux de `hlcamd` (voir [video.md](video.md), « Codec vidéo ») :
+Sur `openqiara/diag/state`, trois champs disent le codec de la vidéo : celui
+du réglage, qui est toujours le codec servi, et celui lu sur le SPS du flux de
+`hlcamd` (voir [video.md](video.md), « Codec vidéo ») :
 
 | Entité | Domaine | Clé | Valeurs |
 |---|---|---|---|
-| Codec vidéo | `sensor` (enum) | `video_codec` | `H.264`, `H.265` : le codec servi par RTSP et HLS (celui du flux dès qu'un SPS a été lu, celui du réglage avant) |
-| Codec vidéo configuré | `sensor` (enum) | `video_codec_configured` | le réglage `video.codec` (`H.264` sans réglage) |
-| Codec vidéo différent du réglage | `binary_sensor` (`problem`) | `video_codec_mismatch` | `ON` quand le flux contredit le réglage ; le flux est servi tel quel |
+| Codec vidéo | `sensor` (enum) | `video_codec` | `H.264`, `H.265` : le codec du flux, lu sur son dernier SPS (celui du réglage avant le premier) |
+| Codec vidéo configuré | `sensor` (enum) | `video_codec_configured` | le réglage `video.codec` (`H.264` sans réglage) : le codec servi par RTSP, HLS et HomeKit |
+| Codec vidéo différent du réglage | `binary_sensor` (`problem`) | `video_codec_mismatch` | `ON` quand le flux contredit le réglage ; le flux n'est alors pas servi |
 
-Un changement de codec déclenche une publication immédiate, sans attendre la
-minute. Le document porte aussi `video_nal` (compteurs de NAL depuis le
-démarrage : `vps`, `sps`, `pps`, `key`, `slice`, `sei`, `aud`, `other`),
-sans entité : à lire dans les attributs ou avec un `template`.
+Un changement du codec du flux déclenche une publication immédiate, sans
+attendre la minute. Le document porte aussi `video_nal` (compteurs de NAL
+servis depuis le démarrage : `vps`, `sps`, `pps`, `key`, `slice`, `sei`,
+`aud`, `other` ; et `foreign`, les unités jetées pour n'être pas du codec
+configuré), sans entité : à lire dans les attributs ou avec un `template`.
 
-Il n'y a **pas** de `select` de codec : la bascule exige de relancer `hlcamd`
-avec une autre option, donc un redémarrage de la caméra (ou une relance de
-`hlcamd` puis le bouton « Relancer OpenQiara » de Qiara Plus) après avoir
-changé `video.codec` dans `openqiara.json`. Avec Qiara Plus v8, l'entité
+Il n'y a **pas** de `select` de codec : changer de codec exige de relancer
+`hlcamd` avec une autre option et openqiarad (qui relit `video.codec` au
+démarrage), donc un redémarrage de la caméra (ou une relance de `hlcamd` puis
+le bouton « Relancer OpenQiara » de Qiara Plus) après avoir changé
+`video.codec` dans `openqiara.json`. Avec Qiara Plus v8, l'entité
 « Codec vidéo demandé à hlcamd » (`video_codec_hlcamd`) dit l'option avec
 laquelle `hlcamd` tourne (`H.264`, `H.265` ou `defaut`), relevée sur sa
 ligne de commande.

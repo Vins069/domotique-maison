@@ -1,10 +1,10 @@
-# OpenQIARA Claude V15 et QIARA Plus v10
+# OpenQIARA Claude V16 et QIARA Plus v10
 
 Distribution prête à l'emploi d'[OpenQiara](https://github.com/Caligone/openqiara) pour les caméras **Qiara**, le modèle rond à cache (« HOMELABCAM »). Elle remet la caméra et ses capteurs 868 MHz en service **en local, dans Home Assistant**, sans le cloud Qiara, arrêté depuis octobre 2025.
 
 > Ce dépôt contient exactement la même distribution que [Vins069/qiara-openqiara](https://github.com/Vins069/qiara-openqiara), le dépôt principal.
 
-**Télécharger** : [paquet/OpenQIARA-Claude-V15.zip](paquet/OpenQIARA-Claude-V15.zip). Son empreinte SHA-256 est dans [paquet/OpenQIARA-Claude-V15.zip.sha256](paquet/OpenQIARA-Claude-V15.zip.sha256).
+**Télécharger** : [paquet/OpenQIARA-Claude-V16.zip](paquet/OpenQIARA-Claude-V16.zip). Son empreinte SHA-256 est dans [paquet/OpenQIARA-Claude-V16.zip.sha256](paquet/OpenQIARA-Claude-V16.zip.sha256).
 
 ## Qu'est-ce que c'est ?
 
@@ -12,19 +12,28 @@ Le kit Qiara comprend une caméra, des détecteurs d'ouverture et de mouvement, 
 
 [OpenQiara](https://github.com/Caligone/openqiara), écrit par Caligone, remplace la partie cloud par un petit programme qui tourne directement sur la caméra. Il pilote la radio des capteurs, fait tourner l'alarme et publie tout dans Home Assistant par MQTT.
 
-**OpenQIARA Claude V15** reprend OpenQiara v0.1.0-rc.22 et y ajoute la vidéo H.265, les réglages d'image, la santé de la caméra et une installation sans édition à la main. **QIARA Plus v10** est une couche de fiabilité installée à côté : elle relance ce qui se bloque et permet de revenir en arrière après une mise à jour ratée.
+**OpenQIARA Claude V16** reprend OpenQiara v0.1.0-rc.23 et y ajoute la vidéo H.265, les réglages d'image, la santé de la caméra et une installation sans édition à la main. **QIARA Plus v10** est une couche de fiabilité installée à côté : elle relance ce qui se bloque et permet de revenir en arrière après une mise à jour ratée.
 
 ```
  Capteurs 868 MHz ──radio──► Caméra Qiara ──MQTT──► Home Assistant (+ Alarmo)
- (ouverture, mouvement,      OpenQIARA Claude V15
+ (ouverture, mouvement,      OpenQIARA Claude V16
   sirène, clavier)           QIARA Plus v10       ──RTSP──► Frigate, go2rtc, lecteur vidéo
 ```
 
 Rien ne sort de votre réseau : ni image, ni donnée de capteur.
 
+## Nouveau dans la V16
+
+- **Base OpenQiara v0.1.0-rc.23** (31/10/2026) : plusieurs codes pour le clavier, état « inconnu » d'un capteur qui n'a pas encore parlé depuis le démarrage, correctifs du projet. Le dépôt d'origine reçoit en retour les améliorations de cette distribution, une par une ([PR #72](https://github.com/Caligone/openqiara/pull/72) : écriture atomique de l'état de l'alarme).
+- **Mises à jour de la distribution** par `mettre-a-niveau.sh`, avec l'essai et le retour arrière automatique de QIARA Plus. Une mise à jour automatique depuis ce dépôt, signée, est prévue pour la V17.
+- **Codec fixé par la configuration** : plus de bascule de codec en cours de flux ni de sonde au démarrage (règle du projet OpenQiara, voir le ticket #64). Si hlcamd produit un autre codec que le réglage, rien n'est servi, l'entité « Codec vidéo différent du réglage » passe à ON et le paquet Home Assistant prévient.
+- **Correction d'un arrêt possible d'OpenQiara** à la reconnexion MQTT, quand un capteur envoyait sa température au même instant (défaut présent depuis plusieurs versions).
+- **Paquet Home Assistant** : 8 automatisations, dont deux nouvelles : aucune image servie (codec), et détecteur de mouvement remis à zéro après un redémarrage de la caméra.
+- Une caméra sous V15 passe à la V16 par la mise à niveau SSH (étape 5b) : capteurs, réglages et QIARA Plus sont conservés.
+
 ## Ce que la distribution apporte
 
-- **Vidéo H.265** : la moitié du débit à qualité égale. Débit et intervalle d'image clé sont réglables ; H.264 reste possible.
+- **Vidéo H.265** : la moitié du débit à qualité égale. Débit et intervalle d'image clé sont réglables ; H.264 reste possible. Le codec servi est toujours celui de la configuration.
 - **Réglages d'image** de l'ancienne application Qiara, pilotables depuis Home Assistant : luminosité, contraste, saturation, clarté, vision de nuit (automatique, forcée, coupée), rotation, réglages de nuit.
 - **Santé de la caméra** dans Home Assistant : Wi-Fi, mémoire, carte SD, température, processeur, version, codec.
 - **Qualité de l'air** mesurée par la caméra : composés organiques volatils, CO₂ équivalent, indice de 1 à 5.
@@ -59,12 +68,12 @@ Comptez 30 minutes, dont 10 à 15 où la caméra travaille seule.
 
 ### Étape 1 : télécharger et vérifier le paquet
 
-1. Téléchargez [OpenQIARA-Claude-V15.zip](paquet/OpenQIARA-Claude-V15.zip) et [son fichier .sha256](paquet/OpenQIARA-Claude-V15.zip.sha256) dans le même dossier.
+1. Téléchargez [OpenQIARA-Claude-V16.zip](paquet/OpenQIARA-Claude-V16.zip) et [son fichier .sha256](paquet/OpenQIARA-Claude-V16.zip.sha256) dans le même dossier.
 2. Vérifiez que le fichier n'a pas été abîmé. La commande doit répondre « OK », ou afficher la même empreinte que le fichier `.sha256` :
-   - Linux : `sha256sum -c OpenQIARA-Claude-V15.zip.sha256`
-   - macOS : `shasum -a 256 -c OpenQIARA-Claude-V15.zip.sha256`
-   - Windows (PowerShell) : `Get-FileHash .\OpenQIARA-Claude-V15.zip -Algorithm SHA256`
-3. Décompressez le zip. Vous obtenez un dossier `OpenQIARA-Claude-V15` : toutes les commandes suivantes se lancent depuis ce dossier.
+   - Linux : `sha256sum -c OpenQIARA-Claude-V16.zip.sha256`
+   - macOS : `shasum -a 256 -c OpenQIARA-Claude-V16.zip.sha256`
+   - Windows (PowerShell) : `Get-FileHash .\OpenQIARA-Claude-V16.zip -Algorithm SHA256`
+3. Décompressez le zip. Vous obtenez un dossier `OpenQIARA-Claude-V16` : toutes les commandes suivantes se lancent depuis ce dossier.
 
 ### Étape 2 : préparer Home Assistant
 
@@ -166,7 +175,7 @@ Le rapport indique si l'installation a réussi, si la liaison MQTT est établie 
 ### Étape 7 : Home Assistant
 
 1. **Entités** : elles apparaissent seules, par MQTT. On trouve l'appareil « OpenQiara Caméra » et un appareil par capteur, sous Paramètres, Appareils et services, MQTT.
-2. **Alarme** : le clavier, la sirène et les détecteurs se pilotent comme avant, seuls ou avec Alarmo.
+2. **Alarme** : le clavier, la sirène et les détecteurs se pilotent comme avant, seuls ou avec Alarmo. Avec Alarmo, le code du clavier se dépose par `PUT http://<caméra>/api/v1/kpd/codes` avec `{"codes": [{"password": "1234", "label": "Alarmo"}]}` (identifiant `admin`) ; l'ancien chemin `/api/v1/kpd/code` de la V15 n'existe plus.
 3. **Alertes** :
    1. dans `configuration.yaml`, ajoutez une fois :
 
@@ -175,10 +184,10 @@ Le rapport indique si l'installation a réussi, si la liaison MQTT est établie 
         packages: !include_dir_named packages
       ```
 
-   2. copiez `home-assistant/packages/openqiara_claude_v15.yaml` dans `/config/packages/` ;
+   2. copiez `home-assistant/packages/openqiara_claude_v16.yaml` dans `/config/packages/` (et retirez `openqiara_claude_v15.yaml` si vous l'aviez : les identifiants des automatisations ne portent plus de numéro de version) ;
    3. vérifiez la configuration (Outils de développement, YAML) et redémarrez.
 
-   Le paquet ajoute 5 alertes : caméra hors ligne, codec différent du réglage, redémarrage par QIARA Plus, mise à jour en essai trop longue, carte presque pleine.
+   Le paquet ajoute 8 automatisations : caméra hors ligne et retour, aucune image servie parce que le codec diffère du réglage et retour, détecteur de mouvement remis à zéro après un redémarrage de la caméra, redémarrage par QIARA Plus, mise à jour en essai trop longue, carte presque pleine.
 4. **Tableau de bord** : `home-assistant/tableau-de-bord-camera.yaml` est une vue prête, avec l'état, les réglages d'image et la maintenance. Collez-la dans l'éditeur YAML brut d'un tableau de bord.
 5. **Image en direct** : `rtsp://<adresse de la caméra>:8554/openqiara`, à lire avec Frigate, go2rtc ou l'intégration « Caméra générique ».
    - En H.265, le navigateur lit par WebRTC : Frigate 0.16.3 et plus, Home Assistant 2026.5.3 et plus, Chrome 136 et plus, ou les applications Home Assistant.
@@ -214,7 +223,7 @@ Dans cet ordre, sur la caméra :
 1. services du cloud : `sh /media/oqc/services-cloud.sh retour` ;
 2. QIARA Plus : `sh /media/oqc/qp-setup.sh uninstall --yes`.
 
-Pour restaurer la carte complète, avec la sauvegarde `sauvegarde-carte-<date>/`, suivez la procédure de [LISEZ-MOI.md](LISEZ-MOI.md#4-après-linstallation). La mise à jour par l'interface web de la caméra est bloquée : une version publiée d'OpenQiara remplacerait cette distribution.
+Pour restaurer la carte complète, avec la sauvegarde `sauvegarde-carte-<date>/`, suivez la procédure de [LISEZ-MOI.md](LISEZ-MOI.md#4-après-linstallation).
 
 ## Contenu du dépôt
 
@@ -233,13 +242,13 @@ Le mode d'emploi complet, également présent dans le zip, est [LISEZ-MOI.md](LI
 
 ## État des essais
 
-- **Caméra réelle** : vidéo H.265 (débit, image clé), réglages d'image et QIARA Plus.
+- **Caméra réelle** : le code de la V16 tourne sur la caméra de l'auteur (H.265 à 2,5 Mbit/s, QIARA Plus, clavier avec Alarmo), après deux relectures indépendantes du code et une batterie d'essais (tests Go sur la vraie racine ARM, flux H.265 réel servi, flux H.264 inattendu écarté, retour arrière vers la version précédente, coupures de courant).
 - **Banc d'essai neuf**, avec une carte d'origine simulée et qemu-arm :
   - préparation de la carte, installation et rapport ;
-  - mise à niveau par SSH d'une caméra sous OpenQiara rc22, et sa relance ;
+  - mise à niveau par SSH d'une caméra sous OpenQiara rc22, d'une caméra sous V15, et relance ;
   - changement de réglage ;
   - reprises après coupure.
-- **Code** : tests Go (26 paquets, avec détection des accès concurrents) et 13 suites QIARA Plus, sans échec.
+- **Code** : tests Go (26 paquets, avec détection des accès concurrents) et 13 suites QIARA Plus (300 contrôles), sans échec.
 - **Windows** : les deux scripts sont éprouvés par le simulateur sous Windows PowerShell 5.1 réel (28 scénarios sur 28).
 - **Reste à confirmer sur du vrai matériel** : la reconnaissance du lecteur de carte par usbipd-win et WSL, macOS, et une première installation complète par un autre utilisateur.
 
@@ -255,6 +264,6 @@ Retours bienvenus par les [issues](../../issues) du dépôt.
 ## Licence et origine
 
 - Licence MIT, voir [LICENSE](LICENSE).
-- OpenQiara : © Caligone et contributeurs ([dépôt d'origine](https://github.com/Caligone/openqiara)). Merci à lui : sans son travail, rien de ceci n'existerait. Les améliorations lui sont proposées dans le [ticket #64](https://github.com/Caligone/openqiara/issues/64).
-- OpenQIARA Claude V15 et QIARA Plus v10 : © 2026 Vins069. Écrits avec Claude (Anthropic).
+- OpenQiara : © Caligone et contributeurs ([dépôt d'origine](https://github.com/Caligone/openqiara)). Merci à lui : sans son travail, rien de ceci n'existerait. Les améliorations lui sont proposées dans le [ticket #64](https://github.com/Caligone/openqiara/issues/64) et par des PR successives (première : [#72](https://github.com/Caligone/openqiara/pull/72)).
+- OpenQIARA Claude V16 et QIARA Plus v10 : © 2026 Vins069. Écrits avec Claude (Anthropic).
 - Projet indépendant, affilié ni à Qiara, ni à Cofidur, ni à Free.

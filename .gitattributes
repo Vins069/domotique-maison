@@ -7,7 +7,7 @@ boot.sh text eol=lf
 *.txt text eol=lf
 *.yaml text eol=lf
 *.go text eol=lf
-openqiarad-claude-v15* binary
+openqiarad-claude-v16* binary
 qiara-plus/dist/qp-* text eol=lf
 # captures du simulateur Windows : octets exacts transmis par PowerShell (BOM, CRLF), jamais convertis
 essais/simulateur-windows/exemple-captures/** -text

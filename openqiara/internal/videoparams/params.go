@@ -5,7 +5,7 @@
 //
 // hlcamd keeps its parameters in /data/hlcamd-parameters.json with, for each
 // one, its value, its default and its native minimum and maximum (study of
-// the 27/10/2026, fable/NOTE-etude-image.md). OpenQiara reads that file
+// a real camera). OpenQiara reads that file
 // (nothing else: no write of its own on the card) and writes a parameter the
 // way the vendor's app and the privacy shutter already do:
 //
@@ -82,8 +82,8 @@ const (
 )
 
 // Params is the closed list: what OpenQiara may write, and nothing else.
-// The defaults and bounds are those read on the camera on the 27/10/2026
-// (fable/NOTE-etude-image.md, constat 1; reading Q177b, testdata/). The
+// The defaults and bounds are those read on a real camera (reading kept
+// in testdata/). The
 // night maxima stop at the vendor's defaults: hlcamd's own bounds for the
 // night.* keys are 0 to 4294967295, which protect nothing, so the bounds
 // here are the only ones. The minima below the defaults were not read on
@@ -126,7 +126,7 @@ var Params = []Param{
 	// set it back, and the "at defaults" flags would have been off whenever
 	// the shutter is closed. The person's wish has its own select entity
 	// (mqtt night-vision), kept in the config, not written here.
-	// The day image (reading Q177b of the 27/10/2026): 0 to 100 each.
+	// The day image (reading in testdata/): 0 to 100 each.
 	{
 		ID: "day_brightness", Key: "config.sensor.day.brightness",
 		Name: "Luminosité (jour)", Group: GroupDay,

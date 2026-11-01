@@ -75,7 +75,7 @@ func TestApplyDefaultsFileBounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := filepath.Join(dir, "d.json")
-	os.WriteFile(p, []byte(`{"video":{"bitrate":90000000,"gop_denum":99,"lock":false}}`), 0o644)
+	_ = os.WriteFile(p, []byte(`{"video":{"bitrate":90000000,"gop_denum":99,"lock":false}}`), 0o644)
 	set, err := s.ApplyDefaultsFile(p)
 	if err != nil || strings.Join(set, ",") != "video.lock" {
 		t.Fatalf("bounds: %v %v", set, err)
@@ -83,7 +83,7 @@ func TestApplyDefaultsFileBounds(t *testing.T) {
 	if v := s.Get().Video; v.Bitrate != 0 || v.GopDenum != 0 || v.Locked() {
 		t.Fatalf("out of range applied: %+v", v)
 	}
-	os.WriteFile(p, []byte(`{"video":`), 0o644)
+	_ = os.WriteFile(p, []byte(`{"video":`), 0o644)
 	if _, err := s.ApplyDefaultsFile(p); err == nil {
 		t.Fatal("broken file accepted")
 	}
@@ -97,13 +97,13 @@ func TestApplyDefaultsFileBounds(t *testing.T) {
 func TestApplySettingsFile(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "openqiara.json")
-	os.WriteFile(cfgPath, []byte(`{"video":{"lock":false,"codec":"h265","bitrate":2500000,"gop_denum":1},"rtsp":{"enabled":true}}`), 0o600)
+	_ = os.WriteFile(cfgPath, []byte(`{"video":{"lock":false,"codec":"h265","bitrate":2500000,"gop_denum":1},"rtsp":{"enabled":true}}`), 0o600)
 	s := NewStore(cfgPath)
 	if err := s.Load(); err != nil {
 		t.Fatal(err)
 	}
 	p := filepath.Join(dir, "openqiara-reglages.json")
-	os.WriteFile(p, []byte(`{"video":{"codec":"h264","bitrate":1500000,"lock":true,"iv_detection":false}}`), 0o644)
+	_ = os.WriteFile(p, []byte(`{"video":{"codec":"h264","bitrate":1500000,"lock":true,"iv_detection":false}}`), 0o644)
 	set, err := s.ApplySettingsFile(p)
 	if err != nil {
 		t.Fatal(err)
@@ -125,14 +125,14 @@ func TestApplySettingsFile(t *testing.T) {
 func TestApplySettingsFileSaveFails(t *testing.T) {
 	dir := t.TempDir()
 	cfgDir := filepath.Join(dir, "cfg")
-	os.Mkdir(cfgDir, 0o755)
+	_ = os.Mkdir(cfgDir, 0o755)
 	s := NewStore(filepath.Join(cfgDir, "openqiara.json"))
 	if err := s.Load(); err != nil {
 		t.Fatal(err)
 	}
 	p := filepath.Join(dir, "openqiara-reglages.json")
-	os.WriteFile(p, []byte(`{"video":{"codec":"h264"}}`), 0o644)
-	os.RemoveAll(cfgDir) // the save (temporary file, then rename) can only fail now
+	_ = os.WriteFile(p, []byte(`{"video":{"codec":"h264"}}`), 0o644)
+	_ = os.RemoveAll(cfgDir) // the save (temporary file, then rename) can only fail now
 	if _, err := s.ApplySettingsFile(p); err == nil {
 		t.Fatal("save failure not reported")
 	}
@@ -167,7 +167,7 @@ func TestInstallerDefaultsContract(t *testing.T) {
 			t.Fatalf("fichier_defauts: %v %s", err, b)
 		}
 		s := NewStore(filepath.Join(dir, "openqiara.json"))
-		os.Remove(filepath.Join(dir, "openqiara.json"))
+		_ = os.Remove(filepath.Join(dir, "openqiara.json"))
 		if err := s.Load(); err != nil {
 			t.Fatal(err)
 		}
@@ -180,7 +180,7 @@ func TestInstallerDefaultsContract(t *testing.T) {
 		if v.Codec != tc.codec || v.GopDenum != tc.gop || v.IVWanted() != tc.iv || v.Locked() != tc.lock || v.Bitrate < MinBitrate {
 			t.Fatalf("%s: %+v", tc.env, v)
 		}
-		os.Remove(out + ".applique")
+		_ = os.Remove(out + ".applique")
 	}
 }
 

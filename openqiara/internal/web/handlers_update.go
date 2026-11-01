@@ -2,9 +2,11 @@ package web
 
 import (
 	"encoding/json"
-	"github.com/caligone/openqiara/internal/qplus"
 	"net/http"
 	"strings"
+
+	"github.com/caligone/openqiara/internal/config"
+	"github.com/caligone/openqiara/internal/qplus"
 )
 
 // handleUpdateCheck interroge l'API GitHub (cache 1h) et retourne les
@@ -31,6 +33,14 @@ func (s *Server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, "échec contact GitHub: "+err.Error())
 		return
 	}
+	if res.UpdateNeeded && s.localBuild() {
+		// une version locale ne s'installe pas depuis GitHub
+		// (handleUpdateInstall refuse) ; la page n'a donc pas à proposer
+		// « Installer ». Copie : CheckLatest garde res en cache.
+		shown := *res
+		shown.UpdateNeeded = false
+		res = &shown
+	}
 	writeJSON(w, http.StatusOK, res)
 }
 
@@ -46,16 +56,14 @@ func (s *Server) handleUpdateInstall(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "OTA non configuré")
 		return
 	}
-	// OpenQIARA Claude V15 (version « -claude ») is not a release of the
-	// OpenQiara project: installing a published release from the web UI
-	// would replace it and lose its additions (H.265, image settings…).
-	// With QIARA Plus installed, /data/openqiarad is its launcher, which an
-	// OTA swap would overwrite. Both are refused with an explanation.
-	if strings.Contains(s.version, "-claude") || qplus.Default.Installed() {
+	// Build local corrigé (suffixe « -claude ») : une installation depuis l'interface remplacerait le
+	// binaire par la version publiée, sans le correctif. On la refuse avec une explication.
+	// Qiara Plus installed: /data/openqiarad is its launcher, which an OTA swap would overwrite.
+	if s.localBuild() {
 		writeErr(w, http.StatusConflict, "Mise à jour par l'interface bloquée : cette caméra fait tourner "+
-			"OpenQIARA Claude V15 et QIARA Plus, une distribution d'OpenQiara qui n'est pas publiée par le projet. "+
-			"Installer une version publiée remplacerait le binaire et le lanceur de QIARA Plus. "+
-			"Pour mettre à jour, utiliser l'outil de mise à niveau de la distribution (installation/mettre-a-niveau).")
+			"OpenQIARA Claude, une distribution d'OpenQiara qui n'est pas publiée par le projet (H.265, réglages d'image, "+
+			"santé de la caméra, QIARA Plus). Installer une version publiée remplacerait le binaire et le lanceur de "+
+			"QIARA Plus. Pour mettre à jour, utiliser l'outil de mise à niveau de la distribution (mettre-a-niveau).")
 		return
 	}
 
@@ -96,3 +104,50 @@ func (s *Server) handleUpdateStatus(w http.ResponseWriter, _ *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, s.otaInstaller.Status())
 }
+
+func (s *Server) handleGetUpdateConfig(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.store.Get().Update)
+}
+
+// handlePutUpdateConfig active ou coupe l'installation automatique des
+// releases. Pris en compte au prochain check, sans redémarrage.
+func (s *Server) handlePutUpdateConfig(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Auto *bool `json:"auto"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "JSON invalide")
+		return
+	}
+	if body.Auto == nil {
+		writeErr(w, http.StatusBadRequest, "champ 'auto' requis")
+		return
+	}
+	// même garde que l'installation manuelle. Une version locale
+	// (« -claude ») ou Qiara Plus installé : l'installation automatique
+	// remplacerait le binaire par la release publiée, sans les ajouts locaux.
+	if *body.Auto && s.localBuild() {
+		writeErr(w, http.StatusConflict, "Installation automatique bloquée : cette caméra fait tourner OpenQIARA Claude, "+
+			"une distribution d'OpenQiara qui n'est pas publiée par le projet. Une version publiée remplacerait le binaire "+
+			"et le lanceur de QIARA Plus : les mises à jour passent par l'outil de la distribution (mettre-a-niveau).")
+		return
+	}
+	if err := s.store.Update(func(cfg *config.Config) {
+		cfg.Update.Auto = *body.Auto
+	}); err != nil {
+		writeErr(w, http.StatusInternalServerError, "échec sauvegarde: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, s.store.Get().Update)
+}
+
+// localBuild : version locale (« -claude ») ou Qiara Plus installé.
+// Aucune release publiée ne doit alors être installée, ni à la main ni
+// automatiquement (voir aussi ota.AutoConfig.Enabled dans main).
+func (s *Server) localBuild() bool {
+	return strings.Contains(s.version, "-claude") || qplusInstalled()
+}
+
+// qplusInstalled dit si Qiara Plus est installé sur cette machine ; variable
+// pour que les tests ne dépendent pas de /data/qp (c5 de la relecture).
+var qplusInstalled = func() bool { return qplus.Default.Installed() }

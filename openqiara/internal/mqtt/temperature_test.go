@@ -2,6 +2,7 @@ package mqtt
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/caligone/openqiara/internal/camera"
@@ -90,4 +91,33 @@ func TestSyncIVEntities(t *testing.T) {
 	if len(c.published) != 2 || c.published[0].payload == "" || c.published[1].payload == "" {
 		t.Fatalf("detection on: %+v", c.published)
 	}
+}
+
+// TestTemperatureRepublishAndStateConcurrently: a reconnection
+// republishes the discovery from paho's connect handler while a sensor's
+// temperature arrives through PublishState. Both touch tempKnown and the
+// sensors' Temperature; run with -race, this used to report a data race (a
+// concurrent map read and write can stop the daemon).
+func TestTemperatureRepublishAndStateConcurrently(t *testing.T) {
+	p, _ := newRecordingPublisher()
+	p.prefix = "openqiara"
+	p.sensors = []camera.Sensor{
+		{ID: 14, Type: "PIR", Reachable: true},
+		{ID: 20, Type: "SRN", Reachable: true},
+	}
+	p.republishDiscovery(context.Background())
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			p.republishDiscovery(context.Background())
+		}()
+		go func(i int) {
+			defer wg.Done()
+			temp := 18 + i%5
+			_ = p.PublishState(context.Background(), camera.Sensor{ID: 14 + 6*(i%2), Type: "PIR", Reachable: true, Temperature: &temp})
+		}(i)
+	}
+	wg.Wait()
 }

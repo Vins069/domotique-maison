@@ -60,7 +60,15 @@ type HAPublisher struct {
 
 	diagKnown map[string]bool // diagnostic entities already discovered (mu)
 	seenSent  map[int]string  // (mu) last "last heard" time published per sensor, on this connection
-	tempKnown map[int]bool    // sensors whose temperature entity is discovered on this connection (mu)
+	// tempMu guards tempKnown and tempSeen: PublishState writes them under p.mu
+	// while republishDiscovery, which may not take p.mu (paho's connect
+	// handler), reads and resets them on every reconnection (the
+	// two used to share tempKnown and the sensors' Temperature unguarded, a
+	// data race that could stop the daemon). p.sensors itself is never
+	// written after Connect.
+	tempMu    sync.Mutex
+	tempKnown map[int]bool // sensors whose temperature entity is discovered on this connection (tempMu)
+	tempSeen  map[int]*int // last temperature of the sensors that reported one since the start (tempMu)
 
 	reconnects atomic.Int64                // connections made, the first included
 	diagReset  atomic.Bool                 // a connection was made: discover the diagnostics again
@@ -257,8 +265,18 @@ func (p *HAPublisher) republishDiscovery(ctx context.Context) {
 	if err := p.publish(ctx, statusTopic(p.prefix), []byte(statusOnline), retained); err != nil {
 		p.log.Warn("status publish failed", "error", err)
 	}
+	p.tempMu.Lock()
 	p.tempKnown = map[int]bool{}
+	p.tempMu.Unlock()
 	for _, s := range p.sensors {
+		if s.Temperature == nil {
+			// Reported since the start (PublishState): the entity is kept on
+			// this connection too, which would otherwise remove it again
+			// (p.sensors is the list taken at the start).
+			p.tempMu.Lock()
+			s.Temperature = p.tempSeen[s.ID]
+			p.tempMu.Unlock()
+		}
 		if err := p.publishDiscovery(ctx, s); err != nil {
 			p.log.Warn("discovery publish failed", "sensor_id", s.ID, "error", err)
 		}
@@ -272,7 +290,9 @@ func (p *HAPublisher) republishDiscovery(ctx context.Context) {
 			}
 		}
 		if s.Temperature != nil {
+			p.tempMu.Lock()
 			p.tempKnown[s.ID] = true
+			p.tempMu.Unlock()
 		} else if _, ok := sensorTypeMap[s.Type]; ok || s.Type == "KPD" {
 			// No temperature ever: an entity of an earlier version, unknown for
 			// good, is removed (an empty retained config deletes it).
@@ -447,22 +467,27 @@ func (p *HAPublisher) PublishState(ctx context.Context, sensor camera.Sensor) er
 		return err
 	}
 
-	if sensor.Temperature != nil && p.tempKnown != nil && !p.tempKnown[sensor.ID] {
+	p.tempMu.Lock()
+	first := sensor.Temperature != nil && p.tempKnown != nil && !p.tempKnown[sensor.ID]
+	p.tempMu.Unlock()
+	if first {
 		// Its first temperature: the entity is created before the state that feeds it.
 		topic, d := temperatureDiscovery(p.prefix, sensor)
 		if data, err := json.Marshal(d); err == nil {
 			if err := p.publish(ctx, topic, data, retained); err == nil {
+				p.tempMu.Lock()
 				p.tempKnown[sensor.ID] = true
+				p.tempMu.Unlock()
 			}
 		}
-		// Remembered for the next connections, whose discovery would otherwise
-		// remove the entity again (p.sensors is the list taken at the start).
-		for i := range p.sensors {
-			if p.sensors[i].ID == sensor.ID {
-				t := *sensor.Temperature
-				p.sensors[i].Temperature = &t
-			}
+		// Remembered for the next connections (see republishDiscovery).
+		t := *sensor.Temperature
+		p.tempMu.Lock()
+		if p.tempSeen == nil {
+			p.tempSeen = map[int]*int{}
 		}
+		p.tempSeen[sensor.ID] = &t
+		p.tempMu.Unlock()
 	}
 	topic := stateTopic(p.prefix, sensor.ID)
 	return p.publish(ctx, topic, payload, retained)
@@ -670,9 +695,9 @@ func marshalState(s camera.Sensor) ([]byte, error) {
 	var v any
 	switch s.Type {
 	case "DWS":
-		v = dwsState{Open: knownState(s, s.Open), Battery: s.Battery, Reachable: s.Reachable, Temperature: s.Temperature}
+		v = dwsState{Open: s.Open, Battery: s.Battery, Reachable: s.Reachable, Temperature: s.Temperature}
 	case "PIR":
-		v = pirState{Motion: knownState(s, s.Motion), Battery: s.Battery, Reachable: s.Reachable, Temperature: s.Temperature}
+		v = pirState{Motion: s.Motion, Battery: s.Battery, Reachable: s.Reachable, Temperature: s.Temperature}
 	case "SRN":
 		v = srnState{Active: s.SirenState == "alert", State: s.SirenState, Battery: s.Battery, Reachable: s.Reachable, Temperature: s.Temperature}
 	case "KPD":
@@ -681,15 +706,4 @@ func marshalState(s camera.Sensor) ([]byte, error) {
 		return nil, fmt.Errorf("unknown sensor type: %s", s.Type)
 	}
 	return json.Marshal(v)
-}
-
-// knownState is a door or motion state as published: nil, left out, until
-// the sensor reported it after a start, so that its battery or its
-// reachability can go out without overwriting the state Home Assistant
-// kept (the value_template renders nothing, and HA leaves the entity).
-func knownState(s camera.Sensor, state bool) *bool {
-	if !s.StateKnown() {
-		return nil
-	}
-	return &state
 }

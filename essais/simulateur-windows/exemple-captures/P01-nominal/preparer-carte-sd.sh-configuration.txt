@@ -1,4 +1,4 @@
-﻿# Configuration de l'installation d'OpenQIARA Claude V15 et de QIARA Plus v10
+﻿# Configuration de l'installation d'OpenQIARA Claude V16 et de QIARA Plus v10
 # Une ligne par reglage, sous la forme NOM=valeur, sans guillemets. Les lignes qui commencent par # sont ignorees.
 # Ce fichier contient votre mot de passe Wi-Fi et celui de MQTT : ne le partagez pas, effacez-le apres l'installation.
 

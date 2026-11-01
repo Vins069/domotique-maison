@@ -132,7 +132,7 @@ func TestReleveWrites(t *testing.T) {
 	}
 	for _, r := range refused {
 		b.clock = b.clock.Add(2 * time.Second)
-		if err := b.SetText(ctx, r.id, r.payload); err == nil || !(errors.Is(err, ErrBounds) || errors.Is(err, ErrUnknown)) {
+		if err := b.SetText(ctx, r.id, r.payload); err == nil || (!errors.Is(err, ErrBounds) && !errors.Is(err, ErrUnknown)) {
 			t.Errorf("%s=%s: %v", r.id, r.payload, err)
 		}
 	}

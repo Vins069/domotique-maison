@@ -264,7 +264,7 @@ ssh_restart() {
   [ "$L2222" = 0 ] && log "dropbear 2222 n'ecoute pas apres la relance : nouvel essai au prochain passage lent"
 }
 # v4 : instantane d'incident. La boite noire (/tmp/bb.log), dmesg et l'etat du reseau vivent en memoire vive : un
-# redemarrage les efface (incident de 20 h 28 le 26/10/2026). Copies sur /media/qp/incidents (6 gardes, ~1 Mo chacun),
+# redemarrage les efface (un incident l a montre). Copies sur /media/qp/incidents (6 gardes, ~1 Mo chacun),
 # repli sur /data/qp/incident (un seul, petit) si /media ne repond pas. Pris au rechargement du pilote Wi-Fi, avant un
 # redemarrage automatique et au retour d'une coupure d'au moins INCIDENT_MIN_SEC.
 INCIDENTS=${QP_INCIDENTS:-$BULK/incidents}
@@ -384,7 +384,7 @@ while :; do
       ssh-restart)     rate_ok order_ssh 6 3600 || { log "ordre HA refuse (6 relances SSH par heure au plus) : $n"; continue; }     # v8
                        log "ordre HA : relance SSH"; ssh_restart "ordre HA" ;;
       reboot)          do_reboot "ordre HA" ;;
-      reboot-installation) do_reboot "ordre HA (fin d'installation OpenQIARA Claude V15)" ;;
+      reboot-installation) do_reboot "ordre HA (fin d'installation OpenQIARA Claude V16)" ;;
       reboot-reglage)  do_reboot "ordre HA (changement de reglage video, reglage.sh)" ;;
       update-rollback) passive "retour arriere" || sh "$QP/qp-update" rollback "ordre HA" >> "$LOG" 2>&1 ;;
       update-promote)  passive "validation" || sh "$QP/qp-update" promote --force >> "$LOG" 2>&1 ;;

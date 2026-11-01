@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# preparer-carte-sd.sh : prepare hors ligne la carte microSD d'une camera Qiara pour OpenQIARA Claude V15 et QIARA Plus v10.
+# preparer-carte-sd.sh : prepare hors ligne la carte microSD d'une camera Qiara pour OpenQIARA Claude V16 et QIARA Plus v10.
 # Fonctionne sous Linux, sous macOS (e2fsprogs de Homebrew) et sous Windows dans WSL (voir Preparer-carte-SD.ps1).
 #
 #   sudo ./preparer-carte-sd.sh --disque sdb  [--configuration configuration.txt] [--oui]
@@ -13,11 +13,11 @@
 # Ce qui est ecrit (rien d'autre n'est touche) :
 #   p1 (systeme)  /etc/init.d/rcS.real : lancement de /data/boot.sh au demarrage, journal ext4 garde sur /data
 #                 (memes correctifs que l'outil d'origine du projet OpenQiara) ;
-#   p2 (/data)    reformatee, puis : OpenQIARA Claude V15 (version compacte), boot.sh, Wi-Fi, cle SSH, configuration,
+#   p2 (/data)    reformatee, puis : OpenQIARA Claude V16 (version compacte), boot.sh, Wi-Fi, cle SSH, configuration,
 #                 reglages par defaut, post_boot.sh ; l'appairage radio d'origine (fbxhome.xml*) et les fichiers du
 #                 constructeur (iv_license, passphrase, video.key, ssl/, hlcamd-parameters.json, firmwares/) sont recopies ;
 #   p3 (/media)   dossier /media/oqc : de quoi terminer l'installation au premier demarrage (installer.sh, QIARA Plus,
-#                 version complete d'OpenQIARA Claude V15). Le reste de /media n'est pas touche.
+#                 version complete d'OpenQIARA Claude V16). Le reste de /media n'est pas touche.
 # Avant toute ecriture, une sauvegarde est faite dans ./sauvegarde-carte-<date>/ : image complete de /data et rcS.real.
 set -euo pipefail
 ICI="$(cd "$(dirname "$0")" && pwd)"
@@ -53,7 +53,7 @@ DEBUGFS=$(outil debugfs); MKE2FS=$(outil mke2fs); E2FSCK=$(outil e2fsck); DUMPE2
 existe() { "$DEBUGFS" -R "stat $2" "$1" 2>/dev/null | grep -q '^Inode:'; }   # debugfs rend 0 meme sur un fichier absent
 [ -n "$DEBUGFS" ] && [ -n "$MKE2FS" ] && [ -n "$E2FSCK" ] && [ -n "$DUMPE2FS" ] || err "outils ext4 introuvables (debugfs, mke2fs, e2fsck). Linux/WSL : sudo apt install e2fsprogs ; macOS : brew install e2fsprogs"
 
-msg "=== OpenQIARA Claude V15 : preparation de la carte SD ==="
+msg "=== OpenQIARA Claude V16 : preparation de la carte SD ==="
 cfg_charger "$CONF"; cfg_verifier carte
 ok "configuration lue : Wi-Fi « $WIFI_SSID », MQTT $MQTT_SERVEUR:$MQTT_PORT, $CODEC a $DEBIT bit/s, image cle reglage $IMAGE_CLE (1 = chaque seconde), QIARA Plus $QIARA_PLUS"
 paquet_verifier "$PAQUET"
@@ -122,15 +122,15 @@ F=$TMP/data; mkdir -p "$F"
 printf '%s' "$WIFI_SSID" > "$F/wifi_ssid"; printf '%s' "$WIFI_PASS" > "$F/wifi_pass"
 : > "$F/bridge"
 cp "$PAQUET/boot.sh" "$F/boot.sh"
-cp "$PAQUET/openqiarad-claude-v15-compact" "$F/openqiarad"
+cp "$PAQUET/openqiarad-claude-v16-compact" "$F/openqiarad"
 cp "$CLE" "$F/ssh_authorized_keys"
 fichier_openqiara "$F/openqiara.json"
 fichier_defauts "$F/openqiara-defauts.json"
 { printf '%s\n' "# /data/post_boot.sh : reglages locaux, execute par boot.sh a la fin du demarrage (sortie dans /data/post_boot.log)."; bloc_post_boot; } > "$F/post_boot.sh"
 bash -n "$F/post_boot.sh" || err "post_boot.sh fabrique invalide"
 M=$TMP/media; mkdir -p "$M"
-for f in openqiarad-claude-v15 openqiarad-claude-v15-compact qp-setup.sh installer.sh services-cloud.sh reglage.sh; do cp "$PAQUET/$f" "$M/$f"; done
-for f in openqiarad-claude-v15 openqiarad-claude-v15-compact; do printf '%s  %s\n' "$(sha256_de "$M/$f")" "$f" > "$M/$f.sha256"; done
+for f in openqiarad-claude-v16 openqiarad-claude-v16-compact qp-setup.sh installer.sh services-cloud.sh reglage.sh; do cp "$PAQUET/$f" "$M/$f"; done
+for f in openqiarad-claude-v16 openqiarad-claude-v16-compact; do printf '%s  %s\n' "$(sha256_de "$M/$f")" "$f" > "$M/$f.sha256"; done
 cp "$F/openqiara-defauts.json" "$M/openqiara-defauts.json"
 fichier_installation "$M/installation.conf"
 : > "$M/A-INSTALLER"
@@ -235,7 +235,7 @@ for f in "$M"/*; do n=$(basename "$f"); CMDS+="rm $n"$'\n'; done
 for f in "$M"/*; do
   n=$(basename "$f")
   CMDS+="write $f $n"$'\n'"set_inode_field $n uid 0"$'\n'"set_inode_field $n gid 0"$'\n'
-  case "$n" in openqiarad-claude-v15|openqiarad-claude-v15-compact|*.sh) CMDS+="set_inode_field $n mode 0100755"$'\n';; *) CMDS+="set_inode_field $n mode 0100644"$'\n';; esac
+  case "$n" in openqiarad-claude-v16|openqiarad-claude-v16-compact|*.sh) CMDS+="set_inode_field $n mode 0100755"$'\n';; *) CMDS+="set_inode_field $n mode 0100644"$'\n';; esac
 done
 printf '%s' "$CMDS" | "$DEBUGFS" -w "$P3" >/dev/null 2>&1
 ok "/media/oqc rempli ($(ls "$M" | wc -l | tr -d ' ') fichiers)"

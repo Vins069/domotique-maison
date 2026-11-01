@@ -61,7 +61,8 @@ type recording struct {
 
 	recorder *hksv.Recorder
 	dataSend *hksv.DataSend
-	// codec is the stream's codec state; nil: H.264.
+	// codec is the stream's codec state: its configured codec
+	// is the one served; nil: H.264.
 	codec *nal.State
 
 	mgmt         *service.CameraRecordingManagement
@@ -245,10 +246,10 @@ func (r *recording) openRecording() (hksv.RecordFunc, int) {
 	if r.active.Value() != characteristic.ActiveActive || r.cameraActive.Value() != 1 {
 		return nil, hksv.ReasonNotAllowed
 	}
-	// HomeKit Secure Video records H.264 (fMP4 avc1): an H.265 stream is
-	// refused with "unsupported" rather than muxed as H.264.
-	if r.codec != nil && r.codec.Effective() != nal.H264 {
-		r.log.Warn("hksv: enregistrement refusé, le flux n'est pas en H.264", "codec", r.codec.Effective().String())
+	// HomeKit Secure Video records H.264 (fMP4 avc1): a camera configured
+	// in H.265 is refused with "unsupported" rather than muxed as H.264.
+	if r.codec != nil && r.codec.Configured() != nal.H264 {
+		r.log.Warn("hksv: enregistrement refusé, le flux n'est pas en H.264", "codec", r.codec.Configured().String())
 		return nil, hksv.ReasonUnsupported
 	}
 	r.mu.Lock()

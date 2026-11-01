@@ -35,7 +35,7 @@ rm -rf "$CD"; (cd "$(dirname "$CD")" && unzip -q -o "$ZIP")
 cp "$CONFCAP" "$CONF"
 CLE=$(sed -e 's/^\xEF\xBB\xBF//' -e 's/\r$//' "$CONF" | sed -n 's/^CLE_SSH_PUBLIQUE=//p' | tail -n 1)
 mkdir -p "$(dirname "$CLE")"
-printf 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAISIMULATEURWINDOWSOPENQIARAV15xxxxxxxxxx simulateur@windows\n' > "$CLE"
+printf 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAISIMULATEURWINDOWSOPENQIARAV16xxxxxxxxxx simulateur@windows\n' > "$CLE"
 chmod -R a+rwX /mnt/c   # DrvFs : fichiers Windows ouverts a tous dans WSL (pas de metadonnees)
 echo "   configuration : $CONF ($(head -c 3 "$CONF" | od -An -tx1 | tr -d ' ') en tete, $(grep -c $'\r$' "$CONF") lignes CRLF)"
 echo "   cle publique  : $CLE"

@@ -64,7 +64,7 @@ func (p Paths) Installed() bool {
 
 // Health is one health record.
 type Health struct {
-	OK   bool   // the gateway, the alarm and the radio answer, hlcamd runs
+	OK   bool   // the gateway, the alarm and the radio answer (hlcamd is not part of it: the guard watches it)
 	Err  string // why not, when not OK
 	MQTT bool   // connected to the broker (written only when MQTTConf)
 	// MQTTConf: a broker is configured. Without one, no mqtt= line: the

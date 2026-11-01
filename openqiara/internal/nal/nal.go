@@ -222,6 +222,58 @@ func MayBeSPS(nal []byte) bool {
 	return (nal[0]&0x9f == H264SPS) || (nal[0] == 0x42 && nal[1] == 0x01)
 }
 
+// Foreign tells whether a NAL unit, served as codec c, can only belong to
+// the other codec, by its header alone. It catches what comes before the
+// SPS which proves the other codec (the state only learns it there):
+//
+//   - under H.264, the base-layer headers of the H.265 VPS, SPS, PPS,
+//     delimiter, SEI, key pictures (IDR_W_RADL, CRA) and of the slices
+//     TRAIL_N, TRAIL_R and TSA_N. Read as H.264, they are types 0
+//     (unspecified), 2 to 4 (data partitions, Extended profile only), 14
+//     and above (extensions, reserved, unspecified), or a type 6, 9 to 12
+//     with a nal_ref_idc that is not 0 (forbidden): no Baseline, Main or
+//     High encoder makes them, a conformant H.264 stream never meets
+//     this test;
+//   - under H.265, a header off the base layer hlcamd makes (forbidden
+//     bit, nuh_layer_id not 0, nuh_temporal_id_plus1 0) or of an
+//     unspecified type (48 to 63): every H.264 slice, IDR, SPS and
+//     delimiter (odd first byte: nuh_layer_id above 31), its PPS (0x68,
+//     type 52; 0x28 or 0x48 followed by a byte above 7).
+//
+// Slices of the other codec are not told by their header (an H.264 SEI
+// can look like an H.265 slice): once its SPS has come, the state's
+// Mismatch is what drops them.
+func Foreign(c Codec, nal []byte) bool {
+	switch c {
+	case H264:
+		// by the H.264 header alone. Types 0 (unspecified), 2 to
+		// 4 (data partitions, Extended profile only), 14 and above (SVC,
+		// MVC and 3D extensions, reserved, auxiliary, unspecified) are
+		// never made by a Baseline, Main or High encoder; and an SEI, a
+		// delimiter, an end of sequence or of stream and a filler (6, 9 to
+		// 12) must carry nal_ref_idc 0 (H.264 §7.4.1). Read as H.265
+		// headers these are the VPS, SPS, PPS, delimiter and SEI (0x40,
+		// 0x42, 0x44, 0x46, 0x4e, 0x50), the slices TRAIL_N, TRAIL_R and
+		// TSA_N that reach the hub before the SPS when the stream is caught
+		// in the middle of a GOP, and the key pictures IDR_W_RADL (0x26)
+		// and CRA (0x2a) when they come without their parameter sets.
+		if len(nal) == 0 {
+			return false
+		}
+		t, ref := nal[0]&0x1f, nal[0]>>5
+		switch {
+		case t == 0, t >= 2 && t <= 4, t >= 14:
+			return true
+		case (t == 6 || t >= 9 && t <= 12) && ref != 0:
+			return true
+		}
+		return false
+	case H265:
+		return !h265BaseLayer(nal) || H265Type(nal) >= 48
+	}
+	return false
+}
+
 // Dimensions reads the picture size of a sequence parameter set, 0, 0
 // when it cannot be read.
 func Dimensions(c Codec, sps []byte) (width, height int) {

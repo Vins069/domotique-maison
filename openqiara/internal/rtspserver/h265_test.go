@@ -235,27 +235,25 @@ func TestRTSPServesH264Stream(t *testing.T) {
 	}
 }
 
-// video.codec says H.264 but hlcamd makes H.265: the first reader, set up
-// for H.264, gets no video and is disconnected as soon as the stream shows
-// its SPS; the next one reads an H265 description and decodes.
-func TestRTSPSwitchesToTheStreamCodec(t *testing.T) {
+// video.codec says H.264 but hlcamd makes H.265: the reader keeps its
+// H.264 description and session, and gets no video (no H.265 unit is
+// packetized as H.264); the mismatch is recorded, and the next DESCRIBE
+// is still H.264.
+func TestRTSPMismatchServesNothing(t *testing.T) {
 	b := newBench(t, nal.H264, nal.H265)
-	f, aus, closed := b.play(t, 5, 15*time.Second)
+	f, aus, closed := b.play(t, 5, 4*time.Second)
 	if _, ok := f.(*format.H264); !ok {
 		t.Fatalf("first description %T", f)
 	}
-	if len(aus) != 0 || !closed {
+	if len(aus) != 0 || closed {
 		t.Fatalf("H.264 reader got %d access units of H.265, closed %v", len(aus), closed)
 	}
-	if !b.state.Mismatch() || b.state.Effective() != nal.H265 {
+	if !b.state.Mismatch() || b.state.Detected() != nal.H265 {
 		t.Fatal("mismatch not recorded")
 	}
-	f2, aus2, closed2 := b.play(t, 5, 15*time.Second)
-	if _, ok := f2.(*format.H265); !ok || closed2 || len(aus2) < 5 {
-		t.Fatalf("second reader: %T, closed %v, %d access units", f2, closed2, len(aus2))
-	}
-	if vps, sps, pps, key := kinds(nal.H265, aus2[0]); vps != 1 || sps != 1 || pps != 1 || key != 1 {
-		t.Fatalf("first access unit after the switch: vps %d sps %d pps %d key %d", vps, sps, pps, key)
+	f2, _, _ := b.play(t, 1, 2*time.Second)
+	if _, ok := f2.(*format.H264); !ok {
+		t.Fatalf("second description %T", f2)
 	}
 }
 
@@ -356,47 +354,4 @@ func TestRTSPPrependsParamsForLateReaders(t *testing.T) {
 			t.Fatalf("%s: no key picture in %d access units", c, len(late))
 		}
 	}
-}
-
-// A reader still counted when the stream shows another codec than the one
-// served: the sessions a switch closes leave only when gortsplib
-// runs their close handler, and a client reconnecting before that (go2rtc
-// and Frigate do so at once) finds the reader count above zero, so no new
-// pipeline starts for it. The running pipeline must then packetize the new
-// codec itself rather than drop every access unit until the count reaches
-// zero. The lingering reader is simulated by OnPlay without a session.
-func TestRTSPPipelineFollowsTheCodecWithReadersLeft(t *testing.T) {
-	b := newBench(t, nal.H264, nal.H265)
-	if _, err := b.srv.OnPlay(nil); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(b.srv.onReaderGone)
-	deadline := time.Now().Add(10 * time.Second)
-	for !b.state.Mismatch() {
-		if time.Now().After(deadline) {
-			t.Fatal("the stream never showed its codec")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	f, aus, closed := b.play(t, 40, 8*time.Second)
-	if _, ok := f.(*format.H265); !ok || closed {
-		t.Fatalf("description %T, closed %v", f, closed)
-	}
-	if len(aus) < 40 {
-		t.Fatalf("reader joining during the switch got %d access units", len(aus))
-	}
-	// Joining mid-GOP, it gets the slices in flight (as earlier versions sent them),
-	// then a key picture, which must carry the parameter sets the pipeline
-	// cached again after the switch.
-	for i, au := range aus {
-		vps, sps, pps, key := kinds(nal.H265, au)
-		if key == 0 {
-			continue
-		}
-		if vps != 1 || sps != 1 || pps != 1 {
-			t.Fatalf("first key picture (access unit %d): vps %d sps %d pps %d", i, vps, sps, pps)
-		}
-		return
-	}
-	t.Fatalf("no key picture in %d access units", len(aus))
 }

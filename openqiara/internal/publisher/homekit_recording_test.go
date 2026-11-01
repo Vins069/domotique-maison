@@ -113,45 +113,48 @@ func TestRecordingStateSurvivesRestart(t *testing.T) {
 	}
 }
 
-// An H.265 stream is refused by the camera accessory: no live
-// session is started for it and a recording is answered "unsupported".
+// A camera configured in H.265 is refused by the camera accessory: no
+// live session is started and a recording is answered
+// "unsupported". Configured in H.264, it is not refused for its codec,
+// even after the stream showed H.265 (the hub drops such a stream).
 func TestCameraRefusesH265(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	cam := NewHomeKitCamera(CameraConfig{Enabled: true}, logger)
-	cam.rec.setStore(hap.NewMemStore())
-	st := nal.NewState(nal.H264, logger)
+	selected := []byte{0x01, 0x06, 0x01, 0x04, 0xa0, 0x0f, 0, 0, 0x02, 0x03, 0x01, 0x01, 0x00}
+	newCam := func(conf nal.Codec) (*HomeKitCamera, *nal.State) {
+		cam := NewHomeKitCamera(CameraConfig{Enabled: true}, logger)
+		cam.rec.setStore(hap.NewMemStore())
+		st := nal.NewState(conf, logger)
+		cam.SetCodecState(st)
+		cam.SetMediaHub(mediahub.New("none", func(ctx context.Context) (<-chan camera.Sample, error) {
+			out := make(chan camera.Sample)
+			go func() { <-ctx.Done(); close(out) }()
+			return out, nil
+		}, nil, logger))
+		req := httptest.NewRequest("PUT", "/characteristics", nil)
+		cam.rec.active.SetValueRequest(1, req)
+		cam.rec.mgmt.SelectedCameraRecordingConfiguration.SetValueRequest(base64.StdEncoding.EncodeToString(selected), req)
+		t.Cleanup(func() { cam.rec.recorder.SetActive(false) })
+		return cam, st
+	}
+	cam, _ := newCam(nal.H265)
+	err := cam.startStreaming(&cameraSession{}, 99, 110)
+	if err == nil || !strings.Contains(err.Error(), "H.264") {
+		t.Fatalf("live stream not refused: %v", err)
+	}
+	if record, reason := cam.rec.openRecording(); record != nil || reason != hksv.ReasonUnsupported {
+		t.Fatalf("recording: %v, reason %d", record != nil, reason)
+	}
+	// Configured in H.264, with an H.265 SPS seen: the recording is
+	// allowed (the live stream then fails on the SRTP keys of this empty
+	// session, not on the codec).
+	cam, st := newCam(nal.H264)
 	for _, n := range camera.SplitNALUnits(fakehlcamd.H265()) {
 		if st.Observe(n) {
 			break
 		}
 	}
-	if st.Effective() != nal.H265 {
+	if !st.Mismatch() {
 		t.Fatal("state")
-	}
-	cam.SetCodecState(st)
-	cam.SetMediaHub(mediahub.New("none", func(ctx context.Context) (<-chan camera.Sample, error) {
-		out := make(chan camera.Sample)
-		go func() { <-ctx.Done(); close(out) }()
-		return out, nil
-	}, nil, logger))
-	err := cam.startStreaming(&cameraSession{}, 99, 110)
-	if err == nil || !strings.Contains(err.Error(), "H.264") {
-		t.Fatalf("live stream not refused: %v", err)
-	}
-	req := httptest.NewRequest("PUT", "/characteristics", nil)
-	cam.rec.active.SetValueRequest(1, req)
-	selected := []byte{0x01, 0x06, 0x01, 0x04, 0xa0, 0x0f, 0, 0, 0x02, 0x03, 0x01, 0x01, 0x00}
-	cam.rec.mgmt.SelectedCameraRecordingConfiguration.SetValueRequest(base64.StdEncoding.EncodeToString(selected), req)
-	defer cam.rec.recorder.SetActive(false)
-	if record, reason := cam.rec.openRecording(); record != nil || reason != hksv.ReasonUnsupported {
-		t.Fatalf("recording: %v, reason %d", record != nil, reason)
-	}
-	// An H.264 stream: the recording is allowed again (the live stream
-	// would then fail on the SRTP keys of this empty session, not on the codec).
-	for _, n := range camera.SplitNALUnits(fakehlcamd.H264()) {
-		if st.Observe(n) {
-			break
-		}
 	}
 	if record, reason := cam.rec.openRecording(); record == nil {
 		t.Fatalf("H.264 recording refused: reason %d", reason)

@@ -1,4 +1,4 @@
-﻿# Preparer-carte-SD.ps1 : prepare depuis Windows la carte microSD d'une camera Qiara pour OpenQIARA Claude V15.
+﻿# Preparer-carte-SD.ps1 : prepare depuis Windows la carte microSD d'une camera Qiara pour OpenQIARA Claude V16.
 # La carte Qiara n'a que des partitions Linux (ext4), que Windows ne sait pas ecrire : le lecteur de carte est confie
 # a WSL par usbipd-win (wsl --mount n'accepte pas les lecteurs de carte ni les cles USB), puis WSL execute
 # preparer-carte-sd.sh, le meme outil que sous Linux et macOS.

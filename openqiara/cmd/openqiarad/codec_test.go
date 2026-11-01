@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"testing"
 
+	"github.com/caligone/openqiara/internal/camera"
+	"github.com/caligone/openqiara/internal/camera/fakehlcamd"
 	"github.com/caligone/openqiara/internal/nal"
 )
 
@@ -36,5 +38,16 @@ func TestCodecDiag(t *testing.T) {
 	}
 	if codecDiag(nil, nil) != nil {
 		t.Fatal("reading without a state")
+	}
+	// The stream shows H.265 under the H.264 setting: the reading tells the
+	// stream's codec and the problem; the codec served stays the setting's.
+	for _, n := range camera.SplitNALUnits(fakehlcamd.H265()) {
+		if st.Observe(n) {
+			break
+		}
+	}
+	r = codecDiag(st, nil)
+	if r["video_codec"] != "H.265" || r["video_codec_configured"] != "H.264" || r["video_codec_mismatch"] != "ON" {
+		t.Fatalf("reading %v", r)
 	}
 }

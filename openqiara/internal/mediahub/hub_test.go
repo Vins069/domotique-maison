@@ -1,11 +1,7 @@
 package mediahub
 
 import (
-	"context"
-	"io"
-	"log/slog"
 	"testing"
-	"time"
 
 	"github.com/caligone/openqiara/internal/camera"
 	"github.com/caligone/openqiara/internal/camera/fakehlcamd"
@@ -81,66 +77,73 @@ func TestUnsubscribeClosesChannel(t *testing.T) {
 	h.unsubscribe(sub)
 }
 
-// The hub sees the codec on the parameter sets before any subscriber does:
-// a consumer told of the change by the state is never behind
-// the sample that proves it.
-func TestHubObservesTheCodec(t *testing.T) {
+// The hub serves the configured codec only: a stream in the
+// other codec reaches no subscriber, the mismatch is recorded and counted,
+// and the configured codec goes out again once the stream is back to it.
+func TestHubDropsTheOtherCodec(t *testing.T) {
 	h := newTestHub()
 	st := nal.NewState(nal.H264, nil)
+	changes := 0
+	st.OnChange = func(nal.Codec) { changes++ }
 	h.SetCodecState(st)
-	sub := &subscription{ch: make(chan camera.Sample, subBuffer), hub: h}
+	sub := &subscription{ch: make(chan camera.Sample, 1024), hub: h}
 	h.subs[sub] = struct{}{}
-	if h.Codec() != nal.H264 {
-		t.Fatal("configured H.264 not served before any sample")
+	send := func(c nal.Codec) (sent int) {
+		for _, au := range fakehlcamd.AccessUnits(c, fakehlcamd.Stream(c), false) {
+			for _, n := range au {
+				h.broadcast(camera.Sample{IsVideo: true, Data: n})
+				sent++
+			}
+		}
+		return sent
 	}
-	for _, au := range fakehlcamd.AccessUnits(nal.H265, fakehlcamd.H265(), false)[:2] {
-		for _, n := range au {
-			h.broadcast(camera.Sample{IsVideo: true, PTS: 0, Data: n})
-			if got := <-sub.ch; nal.H265Type(got.Data) == nal.H265SPS && h.Codec() != nal.H265 {
-				t.Fatal("SPS delivered before the codec changed")
+	drain := func() (got []camera.Sample) {
+		for {
+			select {
+			case s := <-sub.ch:
+				got = append(got, s)
+			default:
+				return got
 			}
 		}
 	}
-	if h.Codec() != nal.H265 || !st.Mismatch() {
-		t.Fatalf("codec %s, mismatch %v", h.Codec(), st.Mismatch())
+	n264 := send(nal.H264)
+	if got := drain(); len(got) != n264 || st.Mismatch() || changes != 1 {
+		t.Fatalf("H.264 stream: %d of %d units delivered, mismatch %v, %d changes", len(got), n264, st.Mismatch(), changes)
 	}
-	// The VPS came before the SPS proved the codec: read under the H.264
-	// setting, it is still counted as the VPS it is (its two first bytes
-	// are no H.264 unit); everything after the SPS as H.265.
+	n265 := send(nal.H265)
+	if got := drain(); len(got) != 0 {
+		t.Fatalf("%d H.265 units delivered under the H.264 setting (first % x)", len(got), got[0].Data[:2])
+	}
+	if !st.Mismatch() || st.Detected() != nal.H265 || st.Configured() != nal.H264 || changes != 2 {
+		t.Fatalf("mismatch %v, detected %s, configured %s, %d changes", st.Mismatch(), st.Detected(), st.Configured(), changes)
+	}
+	// Audio is no video unit: it goes on.
+	h.broadcast(camera.Sample{PTS: 1, Data: []byte{1, 2}})
+	if got := drain(); len(got) != 1 || got[0].IsVideo {
+		t.Fatal("audio not delivered during the mismatch")
+	}
 	c := h.NALCounts()
-	if c["other"] != 0 || c["sps"] != 1 || c["pps"] != 1 || c["sei"] != 1 || c["key"] != 1 || c["slice"] != 1 || c["vps"] != 1 {
-		t.Fatalf("counts %v", c)
+	if c["foreign"] != uint64(n265) || c["vps"] != 0 || c["sps"] != 3 || c["key"] != 3 {
+		t.Fatalf("counts %v (%d H.265 units sent)", c, n265)
 	}
-	if newTestHub().Codec() != nal.H264 {
-		t.Fatal("a hub without a state must serve H.264")
+	// Back to H.264: served again from its SPS, a key picture first.
+	send(nal.H264)
+	got := drain()
+	if st.Mismatch() || changes != 3 || len(got) == 0 || nal.H264Type(got[0].Data) != nal.H264SPS {
+		t.Fatalf("back to H.264: mismatch %v, %d changes, %d units", st.Mismatch(), changes, len(got))
 	}
-}
-
-// The probe at start learns the codec from the stream and leaves the
-// pipeline stopped; a silent stream leaves it Unknown.
-func TestProbeCodec(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	h := New("fake", fakehlcamd.Source(nal.H265, fakehlcamd.H265(), 300, logger), nil, logger)
-	st := nal.NewState(nal.H264, logger)
-	h.SetCodecState(st)
-	if got := h.ProbeCodec(context.Background(), 10*time.Second); got != nal.H265 {
-		t.Fatalf("probe = %s", got)
+	for _, s := range got {
+		if nal.Foreign(nal.H264, s.Data) {
+			t.Fatalf("foreign unit delivered: % x", s.Data[:2])
+		}
 	}
-	h.mu.Lock()
-	running := h.cancel != nil
-	h.mu.Unlock()
-	if running {
-		t.Fatal("pipeline left running after the probe")
-	}
-	if got := h.ProbeCodec(context.Background(), time.Second); got != nal.H265 { // already known: no pipeline
-		t.Fatalf("second probe = %s", got)
-	}
-	silent := New("silent", freezingSource(0), nil, logger)
-	silent.SetCodecState(nal.NewState(nal.H265, logger))
-	if got := silent.ProbeCodec(context.Background(), 200*time.Millisecond); got != nal.Unknown {
-		t.Fatalf("silent probe = %s", got)
-	}
-	if got := New("none", freezingSource(0), nil, logger).ProbeCodec(context.Background(), time.Second); got != nal.Unknown {
-		t.Fatalf("probe without a state = %s", got)
+	// No state: every sample goes out.
+	plain := newTestHub()
+	ps := &subscription{ch: make(chan camera.Sample, 1024), hub: plain}
+	plain.subs[ps] = struct{}{}
+	plain.broadcast(camera.Sample{IsVideo: true, Data: []byte{0x40, 0x01, 0x0c}})
+	if len(ps.ch) != 1 {
+		t.Fatal("a hub without a state filtered a sample")
 	}
 }

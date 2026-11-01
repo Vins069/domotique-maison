@@ -21,7 +21,7 @@
 | Alarme | SecuritySystem | CurrentState/TargetState — limité via `ValidVals` à 3 modes : `AwayArm`, `NightArm`, `Disarmed`. `AlarmTriggered` apparaît automatiquement quand l'engine passe en `triggered`. Exposé en mode standalone même sans KPD pairé. |
 | SRN | Switch | On (bool) — pas de type Siren natif dans HomeKit |
 | Shutter | Switch | On (bool) |
-| Caméra | IPCamera, **accessoire à part** (port 51828) | Flux live 1080p et son du micro (AAC-ELD), sans ffmpeg ; enregistrement HomeKit Secure Video (voir plus bas). **H.264 seulement** : avec `video.codec: h265` l'accessoire n'est pas publié, et un flux qui passe en H.265 est refusé (session live et enregistrements), voir [video.md](video.md) |
+| Caméra | IPCamera, **accessoire à part** (port 51828) | Flux live 1080p et son du micro (AAC-ELD), sans ffmpeg ; enregistrement HomeKit Secure Video (voir plus bas). **H.264 seulement** : avec `video.codec: h265` l'accessoire n'est pas publié (sessions live et enregistrements refusés) ; un flux H.265 sous un réglage H.264 n'est pas servi, voir [video.md](video.md) |
 
 ## Architecture
 

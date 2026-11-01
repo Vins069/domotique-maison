@@ -1,5 +1,5 @@
 #!/bin/sh
-# Test of the video settings read by camera_boot.sh (OpenQIARA Claude V15): the lines between the
+# Test of the video settings read by camera_boot.sh (OpenQIARA Claude): the lines between the
 # « video settings » markers are replayed against test configuration files.
 # Usage: sh scripts/test_video_codec.sh [shell]   (e.g. "busybox sh"); exit status 0 when everything passes.
 SH=${1:-sh}

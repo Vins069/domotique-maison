@@ -29,6 +29,7 @@ type Config struct {
 	Admin      AdminConfig   `json:"admin"`
 	Web        WebConfig     `json:"web"`
 	Alarm      AlarmConfig   `json:"alarm"`
+	Update     UpdateConfig  `json:"update"`
 	Sensors    []SensorEntry `json:"sensors,omitempty"`
 	DeletedIDs []int         `json:"deleted_ids,omitempty"`
 
@@ -160,6 +161,13 @@ type WebConfig struct {
 	// Zero value (false) means enabled for backward compatibility with existing
 	// configs that don't have this field — handled in the load logic below.
 	Enabled *bool `json:"enabled,omitempty"`
+}
+
+// UpdateConfig holds the OTA settings.
+type UpdateConfig struct {
+	// Auto installs the latest release on its own, only while the alarm is
+	// disarmed. Off by default.
+	Auto bool `json:"auto"`
 }
 
 // AlarmConfig selects the alarm operating mode and related settings.
@@ -381,10 +389,12 @@ type SensorEntry struct {
 	Type         string `json:"type"`
 	Model        string `json:"model"`
 	Label        string `json:"label,omitempty"`
-	KPDCode      string `json:"kpd_code,omitempty"`
-	KPDCodeLabel string `json:"kpd_code_label,omitempty"`
 	NightAllowed bool   `json:"night_allowed,omitempty"` // ignored by the alarm when armed for the night
 	Instant      bool   `json:"instant,omitempty"`       // fires the siren with no entry delay
+
+	// KPDCodes are the codes a keypad accepts: it gets the list each time
+	// it wakes up and checks a typed code against it itself.
+	KPDCodes []KPDCode `json:"kpd_codes,omitempty"`
 
 	// Radio is where the sensor sits on the radio network: set at
 	// pairing, imported from fbxhome.xml at the first start.
@@ -395,6 +405,12 @@ type SensorEntry struct {
 	// Temperature is the last one the sensor reported, in °C; nil before
 	// the first. Kept across restarts, sensors send it rarely.
 	Temperature *int `json:"temperature,omitempty"`
+}
+
+// KPDCode is a code a keypad accepts.
+type KPDCode struct {
+	Password string `json:"password"` // 4 digits
+	Label    string `json:"label,omitempty"`
 }
 
 // RadioNode is a sensor's place on the radio network. Addr 0 means none.
@@ -439,6 +455,7 @@ func (s *Store) Load() error {
 		return fmt.Errorf("parse config: %w", err)
 	}
 	migrateNightAlarm(&s.cfg, data)
+	migrateKPDCode(&s.cfg, data)
 
 	// Migration legacy : si on a un password en clair (ancien schéma)
 	// et pas de hash, on hash maintenant. Le Save() est différé jusqu'à
@@ -484,6 +501,32 @@ func migrateNightAlarm(cfg *Config, data []byte) {
 	}
 }
 
+// migrateKPDCode turns kpd_code, a keypad's single code before
+// kpd_codes, into its code list; kpd_codes wins when both are there.
+// This version keeps writing kpd_code too (see onDisk).
+func migrateKPDCode(cfg *Config, data []byte) {
+	var legacy struct {
+		Sensors []struct {
+			ID    int    `json:"id"`
+			Code  string `json:"kpd_code"`
+			Label string `json:"kpd_code_label"`
+		} `json:"sensors"`
+	}
+	if json.Unmarshal(data, &legacy) != nil {
+		return
+	}
+	for _, l := range legacy.Sensors {
+		if l.Code == "" {
+			continue
+		}
+		for i := range cfg.Sensors {
+			if se := &cfg.Sensors[i]; se.ID == l.ID && len(se.KPDCodes) == 0 {
+				se.KPDCodes = []KPDCode{{Password: l.Code, Label: l.Label}}
+			}
+		}
+	}
+}
+
 // Save writes the current configuration to disk.
 //
 // Note sécurité : le fichier contient un hash bcrypt + tokens MQTT en
@@ -500,7 +543,7 @@ func (s *Store) Save() error {
 // leaves the previous config, never a truncated one. In charmux mode it
 // is the registry of the paired sensors.
 func (s *Store) save() error {
-	data, err := json.MarshalIndent(s.cfg, "", "  ")
+	data, err := json.MarshalIndent(onDisk(s.cfg), "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
@@ -624,6 +667,42 @@ func (s *Store) applyFile(path string, force bool) ([]string, error) {
 
 func (c Config) clone() Config {
 	c.Sensors = slices.Clone(c.Sensors)
+	for i := range c.Sensors {
+		c.Sensors[i].KPDCodes = slices.Clone(c.Sensors[i].KPDCodes)
+	}
 	c.DeletedIDs = slices.Clone(c.DeletedIDs)
 	return c
+}
+
+// sensorOnDisk is a sensor as saved: kpd_code and
+// kpd_code_label carry the keypad's first code, for a binary older than
+// rc.23, which reads only kpd_code. On this camera Qiara Plus may roll
+// back to such a binary (failed trial, or by hand): without kpd_code it
+// would serve the keypad no code at all, and the keypad could no longer
+// arm or disarm. kpd_codes stays the reference: it wins on load.
+type sensorOnDisk struct {
+	SensorEntry
+	KPDCode      string `json:"kpd_code,omitempty"`
+	KPDCodeLabel string `json:"kpd_code_label,omitempty"`
+}
+
+// configOnDisk is the configuration as saved: its sensors field shadows
+// the embedded one.
+type configOnDisk struct {
+	Config
+	Sensors []sensorOnDisk `json:"sensors,omitempty"`
+}
+
+// onDisk returns cfg as it is saved, with the compatibility code of every
+// keypad.
+func onDisk(cfg Config) configOnDisk {
+	out := configOnDisk{Config: cfg}
+	for _, se := range cfg.Sensors {
+		d := sensorOnDisk{SensorEntry: se}
+		if len(se.KPDCodes) > 0 {
+			d.KPDCode, d.KPDCodeLabel = se.KPDCodes[0].Password, se.KPDCodes[0].Label
+		}
+		out.Sensors = append(out.Sensors, d)
+	}
+	return out
 }

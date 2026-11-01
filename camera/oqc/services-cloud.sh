@@ -15,7 +15,7 @@
 set -u
 D=${SVC_D:-/etc/fbxupstart.d}; MNT=${SVC_MOUNT:-mount}
 S=${SVC_S:-/media/oqc/sauvegarde/services-cloud}
-MARK="-- neutralise par OpenQIARA Claude V15 (cloud Qiara arrete) :"
+MARK="-- neutralise par OpenQIARA Claude V16 (cloud Qiara arrete) :"
 INERTES="downloader srt-daemon hls-1080p hls-720p hls-360p fbxhome hl-event-collectd nginx-pub dnsmasq"
 RW=0
 fin() { if [ "$RW" = 1 ]; then sync; $MNT -o remount,ro / && echo "partition systeme de nouveau en lecture seule" || echo "ATTENTION : remount ro en echec (sera en lecture seule au redemarrage)"; fi; [ -n "${T:-}" ] && rm -rf "$T"; }

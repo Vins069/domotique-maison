@@ -1,8 +1,10 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -206,15 +208,15 @@ func TestStoreLoadMigratesLegacyPassword(t *testing.T) {
 // the web server edits).
 func TestGetSharesNothing(t *testing.T) {
 	s := NewStore(filepath.Join(t.TempDir(), "config.json"))
-	if err := s.Update(func(c *Config) { c.Sensors = []SensorEntry{{ID: 14, KPDCode: "1234"}} }); err != nil {
+	if err := s.Update(func(c *Config) { c.Sensors = []SensorEntry{{ID: 14, KPDCodes: []KPDCode{{Password: "1234"}}}} }); err != nil {
 		t.Fatal(err)
 	}
 	before := s.Get()
-	if err := s.Update(func(c *Config) { c.Sensors[0].KPDCode = "5678" }); err != nil {
+	if err := s.Update(func(c *Config) { c.Sensors[0].KPDCodes[0].Password = "5678" }); err != nil {
 		t.Fatal(err)
 	}
-	if before.Sensors[0].KPDCode != "1234" {
-		t.Errorf("copy changed to %q", before.Sensors[0].KPDCode)
+	if got := before.Sensors[0].KPDCodes[0].Password; got != "1234" {
+		t.Errorf("copy changed to %q", got)
 	}
 }
 
@@ -272,6 +274,69 @@ func TestMigrateNightAlarm(t *testing.T) {
 	saved, _ := os.ReadFile(path)
 	if strings.Contains(string(saved), "night_alarm") || strings.Contains(string(saved), "day_alarm") {
 		t.Errorf("fbxhome flags still saved:\n%s", saved)
+	}
+}
+
+// TestMigrateKPDCode: a keypad's single kpd_code becomes its code list,
+// and is no longer saved; a file that has kpd_codes keeps them.
+func TestMigrateKPDCode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	old := `{"sensors": [
+		{"id": 14, "type": "KPD", "kpd_code": "1234", "kpd_code_label": "Moi"},
+		{"id": 15, "type": "KPD", "kpd_code": "1234", "kpd_codes": [{"password": "1234"}, {"password": "5678"}]},
+		{"id": 23, "type": "DWS"}
+	]}`
+	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := NewStore(path)
+	if err := s.Load(); err != nil {
+		t.Fatal(err)
+	}
+	want := map[int][]KPDCode{
+		14: {{Password: "1234", Label: "Moi"}},
+		15: {{Password: "1234"}, {Password: "5678"}},
+		23: nil,
+	}
+	for _, se := range s.Get().Sensors {
+		if !slices.Equal(se.KPDCodes, want[se.ID]) {
+			t.Errorf("sensor %d: codes = %+v, want %+v", se.ID, se.KPDCodes, want[se.ID])
+		}
+	}
+	if err := s.Save(); err != nil {
+		t.Fatal(err)
+	}
+	saved, _ := os.ReadFile(path)
+	// the first code is still written to kpd_code, for a binary
+	// older than rc.23 after a roll back (it reads only kpd_code).
+	var legacy struct {
+		Sensors []struct {
+			ID    int    `json:"id"`
+			Code  string `json:"kpd_code"`
+			Label string `json:"kpd_code_label"`
+		} `json:"sensors"`
+	}
+	if err := json.Unmarshal(saved, &legacy); err != nil {
+		t.Fatal(err)
+	}
+	wantLegacy := map[int][2]string{14: {"1234", "Moi"}, 15: {"1234", ""}, 23: {"", ""}}
+	for _, l := range legacy.Sensors {
+		if got := [2]string{l.Code, l.Label}; got != wantLegacy[l.ID] {
+			t.Errorf("sensor %d: kpd_code/label saved = %q, want %q", l.ID, got, wantLegacy[l.ID])
+		}
+	}
+	if n := strings.Count(string(saved), `"sensors"`); n != 1 {
+		t.Errorf("%d sensors keys saved, want 1:\n%s", n, saved)
+	}
+	// Read back: kpd_codes wins over kpd_code.
+	s2 := NewStore(path)
+	if err := s2.Load(); err != nil {
+		t.Fatal(err)
+	}
+	for _, se := range s2.Get().Sensors {
+		if !slices.Equal(se.KPDCodes, want[se.ID]) {
+			t.Errorf("reload, sensor %d: codes = %+v, want %+v", se.ID, se.KPDCodes, want[se.ID])
+		}
 	}
 }
 

@@ -4,6 +4,9 @@
 // a Frigate, go2rtc or VLC configuration against OpenQiara's H.265 output
 // before touching the camera, and to run outils/rtsp_mesure.py
 // against a known stream. No camera, no hlcamd involved.
+// -configured sets video.codec apart from the stream's codec, to see a
+// mismatch as openqiarad handles it: the configured codec is described,
+// no unit of the stream is served, the mismatch is logged.
 //
 //	go run ./cmd/synthrtsp -codec h265 -listen :8554
 //	ffplay rtsp://127.0.0.1:8554/openqiara
@@ -26,7 +29,7 @@ import (
 
 func main() {
 	codecName := flag.String("codec", "h264", "codec of the stream served: h264 or h265")
-	configured := flag.String("configured", "", "codec announced before the stream shows its own (video.codec); default: the stream's")
+	configured := flag.String("configured", "", "codec configured, the one served (video.codec); default: the stream's (another one: nothing is served)")
 	listen := flag.String("listen", ":8554", "RTSP listen address")
 	path := flag.String("path", "openqiara", "RTSP path")
 	fps := flag.Int("fps", 30, "frames per second")

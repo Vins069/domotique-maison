@@ -95,11 +95,16 @@ type Hub struct {
 	last atomic.Int64 // unix nanos of the last sample
 
 	// codec is the stream's codec as configured and as seen:
-	// every video sample goes through it before the subscribers get it,
-	// so that a consumer reading the codec sees it change no later than
-	// the parameter set that proves it. nil: nothing watches the codec.
+	// every video sample goes through it (Admit) before the subscribers
+	// get it, and a unit of another codec than the configured one is
+	// dropped here, for every consumer at once: the codec served never
+	// changes. nil: nothing watches the codec, every sample goes out.
 	codec  *nal.State
 	counts nal.Counter
+	// foreign counts the video units dropped for not being of the
+	// configured codec; foreignLog (unix nanos) spaces their log lines.
+	foreign    atomic.Uint64
+	foreignLog atomic.Int64
 
 	mu     sync.Mutex
 	subs   map[*subscription]struct{}
@@ -131,55 +136,18 @@ func New(name string, source Source, resumer Resumer, logger *slog.Logger) *Hub 
 // first Subscribe.
 func (h *Hub) SetCodecState(s *nal.State) { h.codec = s }
 
-// Codec is the codec to serve: what the stream showed, else what is
-// configured; H.264 when no state is attached.
-func (h *Hub) Codec() nal.Codec {
-	if h.codec == nil {
-		return nal.H264
-	}
-	return h.codec.Effective()
+// NALCounts is how many NAL units of each kind went out since the start,
+// read for the configured codec, and how many were dropped for being of
+// another codec (foreign).
+func (h *Hub) NALCounts() map[string]uint64 {
+	m := h.counts.Snapshot()
+	m["foreign"] = h.foreign.Load()
+	return m
 }
 
-// NALCounts is how many NAL units of each kind went through since the
-// start, read for the codec being served.
-func (h *Hub) NALCounts() map[string]uint64 { return h.counts.Snapshot() }
-
 // NALCountAttrs is NALCounts for a log line.
-func (h *Hub) NALCountAttrs() []any { return h.counts.Attrs() }
-
-// ProbeCodec reads the stream until its codec is known or timeout passes,
-// and returns what is known then. Used once at start, when nobody watches
-// yet: the pipeline runs for the probe alone (hlcamd is woken by the
-// resumer as for any subscriber) and stops with it, so that a wrong
-// video.codec is logged and published before the first client comes.
-// Unknown comes back when the stream stayed silent (shutter closed,
-// hlcamd not up) or when no state is attached.
-func (h *Hub) ProbeCodec(ctx context.Context, timeout time.Duration) nal.Codec {
-	if h.codec == nil {
-		return nal.Unknown
-	}
-	if d := h.codec.Detected(); d != nal.Unknown {
-		return d
-	}
-	sub := h.Subscribe()
-	defer sub.Close()
-	deadline := time.NewTimer(timeout)
-	defer deadline.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return h.codec.Detected()
-		case <-deadline.C:
-			return h.codec.Detected()
-		case _, ok := <-sub.Samples():
-			if !ok {
-				return h.codec.Detected()
-			}
-			if d := h.codec.Detected(); d != nal.Unknown {
-				return d
-			}
-		}
-	}
+func (h *Hub) NALCountAttrs() []any {
+	return append(h.counts.Attrs(), "autre_codec_jete", h.foreign.Load())
 }
 
 // Subscription is the consumer-facing handle. Read Samples until it closes
@@ -249,8 +217,11 @@ func (h *Hub) LastSample() time.Time {
 func (h *Hub) broadcast(sample camera.Sample) {
 	h.last.Store(time.Now().UnixNano())
 	if sample.IsVideo && h.codec != nil {
-		h.codec.Observe(sample.Data)
-		h.counts.Add(h.codec.Effective(), sample.Data)
+		if !h.codec.Admit(sample.Data) {
+			h.dropForeign()
+			return
+		}
+		h.counts.Add(h.codec.Configured(), sample.Data)
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -262,6 +233,30 @@ func (h *Hub) broadcast(sample camera.Sample) {
 			// consumers recover at the next IDR (which re-carries SPS/PPS).
 		}
 	}
+}
+
+// foreignLogEvery spaces the log lines of the units dropped for their codec.
+const foreignLogEvery = 30 * time.Second
+
+// dropForeign counts a video unit dropped for not being of the configured
+// codec, and logs the count at most every foreignLogEvery: the state has
+// logged the mismatch itself, as an error, when it began.
+func (h *Hub) dropForeign() {
+	n := h.foreign.Add(1)
+	now := time.Now().UnixNano()
+	last := h.foreignLog.Load()
+	if now-last < int64(foreignLogEvery) || !h.foreignLog.CompareAndSwap(last, now) {
+		return
+	}
+	// Before the other codec's SPS, the units are dropped by their header
+	// alone and Detected still says the configured codec: name it only once
+	// it is known.
+	flux := "en-tête de l'autre codec"
+	if h.codec.Mismatch() {
+		flux = h.codec.Detected().String()
+	}
+	h.log.Warn("mediahub: unités vidéo d'un autre codec que video.codec jetées",
+		"configure", h.codec.Configured().String(), "flux", flux, "total", n)
 }
 
 // restartDelay spaces the source's restarts after it failed.

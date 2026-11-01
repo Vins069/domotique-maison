@@ -1,5 +1,5 @@
 #!/bin/sh
-# reglage.sh : change un reglage video d'OpenQIARA Claude V15 apres l'installation (par SSH sur la camera).
+# reglage.sh : change un reglage video d'OpenQIARA Claude V16 apres l'installation (par SSH sur la camera).
 #   sh /media/oqc/reglage.sh codec h264|h265
 #   sh /media/oqc/reglage.sh debit 2500000              (bits/s, de 500000 a 8000000)
 #   sh /media/oqc/reglage.sh image-cle 1|2              (1 = une image cle par seconde, 2 = toutes les 0,5 s)

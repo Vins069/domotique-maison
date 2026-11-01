@@ -149,22 +149,25 @@ func TestServesH264AsMPEGTS(t *testing.T) {
 	}
 }
 
-// video.codec says H.264 but the stream is H.265: the muxer started for
-// H.264 stops as soon as the stream shows its codec (the request gets a
-// 503 at once, not after readyWait), and the next request is served in
-// H.265.
-func TestMuxerStopsWhenTheCodecChanges(t *testing.T) {
-	srv, state := newBench(t, nal.H264, nal.H265)
-	t0 := time.Now()
-	code, body := getCode(srv, "/stream/HLS_TEST.m3u8")
-	if code != http.StatusServiceUnavailable || time.Since(t0) > 5*time.Second {
-		t.Fatalf("first request: %d %s after %v", code, body, time.Since(t0))
-	}
-	if !state.Mismatch() {
-		t.Fatal("mismatch not seen")
-	}
-	_, pl := mediaPlaylist(t, srv)
-	if !regexp.MustCompile(`#EXT-X-MAP:URI=`).MatchString(pl) {
-		t.Fatalf("second request not served as fMP4:\n%s", pl)
+// video.codec says H.264 but the stream is H.265: nothing reaches the
+// muxer (the hub drops every unit), so it never starts and the request
+// gets the "no picture" answer; the mismatch is recorded. The same with
+// H.265 configured and an H.264 stream.
+func TestServesNothingOfTheOtherCodec(t *testing.T) {
+	for _, c := range []struct{ conf, stream nal.Codec }{{nal.H264, nal.H265}, {nal.H265, nal.H264}} {
+		t.Run(c.conf.Option(), func(t *testing.T) {
+			t.Parallel() // each waits readyWait
+			srv, state := newBench(t, c.conf, c.stream)
+			code, body := getCode(srv, "/stream/HLS_TEST.m3u8")
+			if code != http.StatusServiceUnavailable {
+				t.Fatalf("%d %s", code, body)
+			}
+			srv.mu.Lock()
+			started := srv.run != nil && srv.run.muxer != nil
+			srv.mu.Unlock()
+			if started || !state.Mismatch() || state.Detected() != c.stream {
+				t.Fatalf("muxer started %v, mismatch %v, detected %s", started, state.Mismatch(), state.Detected())
+			}
+		})
 	}
 }

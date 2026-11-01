@@ -1,4 +1,4 @@
-# OpenQIARA Claude V15 : vue « Caméra Qiara » pour un tableau de bord Home Assistant.
+# OpenQIARA Claude V16 : vue « Caméra Qiara » pour un tableau de bord Home Assistant.
 # A coller dans un tableau de bord : Modifier > (trois points) > Modifier en YAML brut, puis ajouter ce bloc dans la
 # liste « views: » (ou creer un tableau neuf et remplacer son contenu par « views: » suivi de ce bloc).
 # Identifiants par defaut de l'appareil « OpenQiara Caméra » : a adapter si l'appareil a ete renomme.

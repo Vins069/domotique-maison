@@ -145,8 +145,8 @@ fichier_installation() {
 }
 
 # BLOC_POST_BOOT : bloc ajoute a /data/post_boot.sh, qui lance installer.sh tant qu'une etape reste a faire.
-BLOC_DEBUT='# >>> openqiara-claude-v15 (ne pas modifier ce bloc) >>>'
-BLOC_FIN='# <<< openqiara-claude-v15 <<<'
+BLOC_DEBUT='# >>> openqiara-claude (ne pas modifier ce bloc) >>>'
+BLOC_FIN='# <<< openqiara-claude <<<'
 bloc_post_boot() {
   printf '%s\n%s\n%s\n' "$BLOC_DEBUT" \
     '[ -f /media/oqc/installer.sh ] && { [ -e /media/oqc/A-INSTALLER ] || [ -e /media/oqc/A-VERIFIER ]; } && ( nohup sh /media/oqc/installer.sh auto >/dev/null 2>&1 & )' \
@@ -154,7 +154,7 @@ bloc_post_boot() {
 }
 
 # paquet_verifier dossier : les fichiers de la camera sont presents et conformes a SHA256SUMS.
-PAQUET_FICHIERS="openqiarad-claude-v15 openqiarad-claude-v15-compact boot.sh qp-setup.sh installer.sh services-cloud.sh reglage.sh"
+PAQUET_FICHIERS="openqiarad-claude-v16 openqiarad-claude-v16-compact boot.sh qp-setup.sh installer.sh services-cloud.sh reglage.sh"
 paquet_verifier() {
   local d=$1 f w n
   [ -f "$d/SHA256SUMS" ] || err "paquet incomplet : $d/SHA256SUMS absent"

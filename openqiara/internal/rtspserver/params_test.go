@@ -47,7 +47,7 @@ func TestKeepAUResync(t *testing.T) {
 		t.Fatal("frames skipped with no drop")
 	}
 	s.resync.Store(true)
-	if s.keepAU(false) || s.keepAU(false) {
+	if first, second := s.keepAU(false), s.keepAU(false); first || second {
 		t.Fatal("frame sent while waiting for a key frame")
 	}
 	if !s.keepAU(true) {

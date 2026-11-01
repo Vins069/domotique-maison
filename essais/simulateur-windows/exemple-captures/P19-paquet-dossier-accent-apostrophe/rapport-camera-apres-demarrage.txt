@@ -1,4 +1,4 @@
-Rapport d'installation OpenQIARA Claude V15 / QIARA Plus v10 - 2026-10-29 13:47:00
+Rapport d'installation OpenQIARA Claude V16 / QIARA Plus v10 - 2026-10-29 13:47:00
 
 OK   OpenQiara en marche (pid 7157, depuis 94 s)
 OK   interface web : port 80 ouvert

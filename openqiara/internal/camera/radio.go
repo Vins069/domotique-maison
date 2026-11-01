@@ -1,6 +1,7 @@
 package camera
 
 import (
+	"cmp"
 	"context"
 	"encoding/binary"
 	"encoding/hex"
@@ -229,9 +230,9 @@ func (c *RadioClient) Reload() {
 
 // reload makes the engine serve the sensors of the config, the source of
 // truth: pairing, deletion and keypad codes all go through it. A sensor
-// with no radio address is not served; neither is a keypad whose code is
-// not valid, rather than served without a code (its off button alone
-// would disarm). Called with mu held.
+// with no radio address is not served; neither is a keypad without a
+// code, or with one that is not valid, rather than served without a code
+// (its off button alone would disarm). Called with mu held.
 func (c *RadioClient) reload() {
 	nodes := make(map[int]radio.Node)
 	sensors := make(map[int]Sensor)
@@ -247,11 +248,16 @@ func (c *RadioClient) reload() {
 		s.Type, s.ItemID = se.Type, se.Radio.UID
 		if se.Radio.Addr == 0 {
 			s.Reachable = false
+		} else if model == radio.KPD && len(se.KPDCodes) == 0 {
+			// The engine would serve it an empty list.
+			c.log.Error("radio: sensor not served", "id", se.ID, "error", "keypad without a code")
+			s.Reachable = false
 		} else {
 			n := radio.Node{Addr: se.Radio.Addr, Model: model, SystemIndex: se.Radio.SystemIndex}
 			if model == radio.KPD {
-				// An empty code is not valid: the engine refuses it.
-				n.PINs = []string{se.KPDCode}
+				for _, code := range se.KPDCodes {
+					n.PINs = append(n.PINs, code.Password)
+				}
 			}
 			nodes[se.ID] = n
 		}
@@ -430,6 +436,22 @@ var keypadActions = map[radio.EventKind]string{
 	radio.ArmedAway: "armed_away", radio.ArmedNight: "armed_night", radio.Disarmed: "disarmed",
 }
 
+// codeLabel names the code a keypad accepted, for the log: the code
+// itself never goes there.
+func (c *RadioClient) codeLabel(id int, password string) string {
+	for _, se := range c.store.Get().Sensors {
+		if se.ID != id {
+			continue
+		}
+		for i, code := range se.KPDCodes {
+			if code.Password == password {
+				return cmp.Or(code.Label, fmt.Sprintf("#%d", i+1))
+			}
+		}
+	}
+	return "not in the config" // changed since the keypad last woke up
+}
+
 // publish turns an engine event into the sensor state openqiarad
 // publishes. Every door and motion report goes out, repeated or not: a
 // lost close must not hide the next open. A keypad button is an action,
@@ -446,10 +468,15 @@ func (c *RadioClient) publish(ev radio.Event) {
 	report := false
 	switch ev.Kind {
 	case radio.Opened, radio.Closed:
-		s.Open, report = ev.Kind == radio.Opened, true
+		open := ev.Kind == radio.Opened
+		s.Open, report = &open, true
 	case radio.MotionStart, radio.MotionEnd:
-		s.Motion, report = ev.Kind == radio.MotionStart, true
+		motion := ev.Kind == radio.MotionStart
+		s.Motion, report = &motion, true
 	case radio.ArmedAway, radio.ArmedNight, radio.Disarmed:
+		if ev.Code != "" {
+			c.log.Info("radio: keypad disarmed with a code", "id", id, "code", c.codeLabel(id, ev.Code))
+		}
 		action := s
 		action.KPDState = keypadActions[ev.Kind]
 		c.emit(action)
@@ -492,9 +519,6 @@ func (c *RadioClient) publish(ev radio.Event) {
 		c.event(SensorEvent{SensorID: id, Sensor: s, Notice: NoticeRebooted})
 	case radio.Unhandled:
 		c.log.Warn("radio: frame not understood", "id", id, "value", ev.Value)
-	}
-	if report {
-		s.Reported = true
 	}
 	c.sensors[id] = s
 	if report || s != before {
@@ -1033,6 +1057,10 @@ func (c *RadioClient) SetShutter(ctx context.Context, open bool) error {
 	return nil
 }
 
+// nightModeTimeout bounds one fbxbusctl of the night mode (videoparams gives
+// the same command 8 s).
+const nightModeTimeout = 8 * time.Second
+
 // nightModeExec runs fbxbusctl; nil runs it for real (tests set it).
 var nightModeExec = func(ctx context.Context, settings string) ([]byte, error) {
 	return exec.CommandContext(ctx, "fbxbusctl", "set", "hlcamd", "video_settings", settings).CombinedOutput()
@@ -1046,6 +1074,12 @@ func (c *RadioClient) applyNightModeLocked(ctx context.Context, open bool) error
 		mode = c.store.Get().Video.NightMode()
 	}
 	settings := fmt.Sprintf(`{"parameters":{"config.sensor.night_day_mode":{"val":%d}}}`, mode)
+	// délai maximal, comme videoparams. Le contexte de l'appelant
+	// (volet par MQTT, select « Vision de nuit ») n'a pas d'échéance, et un
+	// fbxbusctl qui ne rend pas la main (hlcamd figé) bloquerait nightMu,
+	// donc tout SetShutter et ApplyNightVision suivant.
+	ctx, cancel := context.WithTimeout(ctx, nightModeTimeout)
+	defer cancel()
 	if out, err := nightModeExec(ctx, settings); err != nil {
 		return fmt.Errorf("radio: hlcamd night mode: %w: %s", err, strings.TrimSpace(string(out)))
 	}

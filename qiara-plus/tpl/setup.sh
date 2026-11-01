@@ -1,5 +1,5 @@
 #!/bin/sh
-# qp-setup : installation, essai a blanc et retrait de « QIARA Plus v10 » sur la camera (distribution OpenQIARA Claude V15).
+# qp-setup : installation, essai a blanc et retrait de « QIARA Plus v10 » sur la camera (distribution OpenQIARA Claude V16).
 # Ce fichier est autonome : les trois outils (qp-launch, qp-guard, qp-update) sont integres a la fin, avec leurs empreintes.
 # Usage : sh qp-setup.sh selftest          essai a blanc en memoire vive (rien n'est ecrit sur la carte)
 #         sh qp-setup.sh preflight         controles en lecture seule, annonce ce qui serait ecrit

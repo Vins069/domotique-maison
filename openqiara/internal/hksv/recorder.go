@@ -20,9 +20,9 @@ const liveBuffer = 512
 // errNotRecording: recording is off.
 var errNotRecording = errors.New("hksv: recording is not active")
 
-// ErrNotH264: the stream is not H.264, which HomeKit Secure Video
-// requires: a recording is refused rather than built from
-// H.265 NAL units labelled avc1.
+// ErrNotH264: the camera is configured for another codec than H.264,
+// which HomeKit Secure Video requires: a recording is refused
+// rather than built from H.265 NAL units labelled avc1.
 var ErrNotH264 = errors.New("hksv: the camera's stream is not H.264, recording refused")
 
 // Recorder keeps the prebuffer while recording is on and hands it, then
@@ -30,7 +30,8 @@ var ErrNotH264 = errors.New("hksv: the camera's stream is not H.264, recording r
 type Recorder struct {
 	log *slog.Logger
 
-	// codec is the stream's codec state; nil: H.264 for good.
+	// codec is the stream's codec state: its configured codec
+	// is the one served; nil: H.264.
 	codec *nal.State
 
 	mu     sync.Mutex
@@ -40,15 +41,20 @@ type Recorder struct {
 	buf    prebuffer
 	live   chan camera.Sample // the recording's samples; nil when none
 	// refused says the stream is being dropped for not being H.264, so
-	// that it is logged once per run of it.
+	// that it is logged once.
 	refused bool
+	// mismatch says the stream is in another codec than the setting, so
+	// that the prebuffer is emptied and it is logged once.
+	mismatch bool
 }
 
 // SetCodecState attaches the stream's codec state, the one the hub feeds.
 func (r *Recorder) SetCodecState(s *nal.State) { r.codec = s }
 
-// h264 tells whether the stream may be recorded: H.264, or no state.
-func (r *Recorder) h264() bool { return r.codec == nil || r.codec.Effective() == nal.H264 }
+// h264 tells whether the stream may be recorded: configured in H.264, or
+// no state. A stream that contradicts an H.264 setting reaches no
+// consumer (the hub drops it), so the setting is all there is to check.
+func (r *Recorder) h264() bool { return r.codec == nil || r.codec.Configured() == nal.H264 }
 
 // NewRecorder returns a recorder keeping prebufferMs of the camera.
 func NewRecorder(prebufferMs int, logger *slog.Logger) *Recorder {
@@ -111,20 +117,29 @@ func (r *Recorder) add(ctx context.Context, s camera.Sample) {
 		return // a stale subscription's sample
 	}
 	// Not H.264: nothing is kept (the prebuffer's GOP logic reads H.264
-	// headers), a running recording ends, and the log says so once.
+	// headers), and the log says so once.
 	if !r.h264() {
 		if !r.refused {
 			r.refused = true
-			r.log.Warn("hksv: flux non H.264, enregistrement impossible : échantillons ignorés", "codec", r.codec.Effective().String())
+			r.log.Warn("hksv: flux non H.264, enregistrement impossible : échantillons ignorés", "codec", r.codec.Configured().String())
+		}
+		return
+	}
+	// while the stream contradicts the setting, the hub drops
+	// its video but the audio goes on. Nothing is kept then: the prebuffer
+	// trims on video timestamps, which no longer move, and a recording
+	// would get audio alone. Prebuffer and recording start afresh when the
+	// stream is back in the configured codec.
+	if r.codec != nil && r.codec.Mismatch() {
+		if !r.mismatch {
+			r.mismatch = true
+			r.log.Warn("hksv: flux d'un autre codec que le réglage, prebuffer vidé et enregistrement arrêté")
 			r.buf.reset()
 			r.endLive()
 		}
 		return
 	}
-	if r.refused {
-		r.refused = false
-		r.log.Info("hksv: flux de nouveau en H.264, enregistrement possible")
-	}
+	r.mismatch = false
 	r.buf.add(s)
 	if r.live == nil {
 		return

@@ -51,7 +51,8 @@ type HomeKitCamera struct {
 	rec *recording // HomeKit Secure Video services
 
 	// codec is the stream's codec state: HomeKit takes H.264
-	// only; anything else is refused, live and recorded. nil: H.264.
+	// only; a camera configured for another codec is refused, live and
+	// recorded. nil: H.264.
 	codec *nal.State
 
 	mu       sync.Mutex
@@ -65,8 +66,10 @@ func (c *HomeKitCamera) SetCodecState(s *nal.State) {
 	c.rec.recorder.SetCodecState(s)
 }
 
-// h264 tells whether the stream can go to HomeKit: H.264, or no state.
-func (c *HomeKitCamera) h264() bool { return c.codec == nil || c.codec.Effective() == nal.H264 }
+// h264 tells whether the stream can go to HomeKit: configured in H.264, or
+// no state (a stream contradicting the setting reaches no consumer: the
+// hub drops it).
+func (c *HomeKitCamera) h264() bool { return c.codec == nil || c.codec.Configured() == nal.H264 }
 
 // SetMediaHub attache le hub média partagé. Doit être appelé avant la
 // première session HK : sans lui, pas de flux.
@@ -396,10 +399,10 @@ func (c *HomeKitCamera) startStreaming(sess *cameraSession, videoPT, audioPT uin
 		return fmt.Errorf("camera: no media hub")
 	}
 	// HomeKit's live stream is H.264 (RFC 6184 packetizer, avc in the
-	// stream configuration): an H.265 stream is refused here, never
-	// packetized as H.264.
+	// stream configuration): a camera configured in H.265 is refused
+	// here, its stream never packetized as H.264.
 	if !c.h264() {
-		return fmt.Errorf("camera: HomeKit n'accepte que le H.264, le flux est en %s : flux refusé (video.codec)", c.codec.Effective())
+		return fmt.Errorf("camera: HomeKit n'accepte que le H.264, le flux est en %s : flux refusé (video.codec)", c.codec.Configured())
 	}
 	payloadType := videoPT
 	if payloadType == 0 {
@@ -497,7 +500,6 @@ func (c *HomeKitCamera) startStreaming(sess *cameraSession, videoPT, audioPT uin
 
 		var pending camera.Sample
 		havePending := false
-		refused := false
 
 		flushPending := func(isLastOfAU bool) {
 			if !havePending {
@@ -522,16 +524,6 @@ func (c *HomeKitCamera) startStreaming(sess *cameraSession, videoPT, audioPT uin
 				if !sample.IsVideo {
 					if err := audioSender.SendPCM(sample.Data); err != nil {
 						c.log.Debug("srtp audio: send failed", "error", err)
-					}
-					continue
-				}
-				// The stream turned to another codec while streaming: its
-				// NAL units never go out as H.264.
-				if !c.h264() {
-					if !refused {
-						refused = true
-						havePending = false
-						c.log.Warn("camera: le flux n'est plus en H.264, vidéo HomeKit coupée", "codec", c.codec.Effective().String())
 					}
 					continue
 				}
